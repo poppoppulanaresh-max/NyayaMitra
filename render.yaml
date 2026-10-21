@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: nyaya-mitra
+    runtime: python
+    region: singapore
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true
+    healthCheckPath: /_stcore/health
+    numInstances: 1
+    disk:
+      name: nyaya-mitra-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NYAYA_PUBLIC_MODE
+        value: "1"
+      - key: NYAYA_DATA_DIR
+        value: /var/data/data
+      - key: NYAYA_DB_PATH
+        value: /var/data/data/nyay_mitra.db
+      - key: NYAYA_UPLOADS_DIR
+        value: /var/data/uploads
+      - key: NYAYA_USE_EMBEDDINGS
+        value: "0"
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false

@@ -1,0 +1,68 @@
+[
+  {
+    "id": 1,
+    "act_name": "Educational citizen guidance (not a statute)",
+    "section": "unknown",
+    "title": "What is an FIR (educational note)",
+    "text": "EDUCATIONAL SAMPLE — NOT OFFICIAL STATUTE TEXT. A First Information Report (FIR) is commonly described in Indian criminal procedure teaching materials as the written record of information given to the police about the alleged commission of a cognizable offence. The precise current procedure, forms, and police duties are set out in the applicable criminal procedure law in force (historically the Code of Criminal Procedure, 1973; in many contexts now the Bharatiya Nagarik Suraksha Sanhita). This note does not quote those statutes and must not be treated as the current legal text. Consult India Code or a qualified legal professional for the official provision.",
+    "source": "Educational sample — not an official legal source",
+    "language": "en",
+    "verification_status": "educational_sample",
+    "last_updated": "educational-seed"
+  },
+  {
+    "id": 2,
+    "act_name": "Constitution of India",
+    "section": "21",
+    "title": "Protection of life and personal liberty (short public excerpt)",
+    "text": "Article 21 of the Constitution of India states: \"No person shall be deprived of his life or personal liberty except according to procedure established by law.\" This excerpt is a short, commonly published constitutional sentence. Always confirm the current official text, including amendments, from an official publication such as India Code. This application does not certify that the excerpt is the latest official version.",
+    "source": "https://www.indiacode.nic.in/ (verify current official text)",
+    "language": "en",
+    "verification_status": "short_public_excerpt_unverified_version",
+    "last_updated": "educational-seed"
+  },
+  {
+    "id": 3,
+    "act_name": "Constitution of India",
+    "section": "22",
+    "title": "Protection against arrest and detention in certain cases (short public excerpt)",
+    "text": "Article 22(1) of the Constitution of India states: \"No person who is arrested shall be detained in custody without being informed, as soon as may be, of the grounds for such arrest nor shall he be denied the right to consult, and to be defended by, a legal practitioner of his choice.\" This is a short public excerpt only. Related clauses of Article 22 and statutory criminal procedure are not reproduced here. Confirm the full current official text before relying on it. This is general information, not legal advice.",
+    "source": "https://www.indiacode.nic.in/ (verify current official text)",
+    "language": "en",
+    "verification_status": "short_public_excerpt_unverified_version",
+    "last_updated": "educational-seed"
+  },
+  {
+    "id": 4,
+    "act_name": "Educational citizen guidance (not a statute)",
+    "section": "unknown",
+    "title": "Where to find official legal information",
+    "text": "EDUCATIONAL SAMPLE. Citizens can typically look for official Central Acts and many official legal texts on India Code (https://www.indiacode.nic.in/) and for many Government of India notifications on the eGazette. High Court and Supreme Court websites publish judgments. State amendments, rules, and local notifications may appear on the relevant State government or department websites. Availability on a website does not automatically mean a document in this application has been verified as current. This application is not an official government service.",
+    "source": "Educational sample — points to public official portals",
+    "language": "en",
+    "verification_status": "educational_sample",
+    "last_updated": "educational-seed"
+  },
+  {
+    "id": 5,
+    "act_name": "Educational citizen guidance (not a statute)",
+    "section": "unknown",
+    "title": "IPC, CrPC, BNS and BNSS naming (educational note)",
+    "text": "EDUCATIONAL SAMPLE — NOT A SUBSTITUTE FOR STATUTE TEXT. The Indian Penal Code (IPC) and the Code of Criminal Procedure (CrPC) are older Central criminal statutes. Teaching materials often describe the IPC as primarily substantive criminal law and the CrPC as primarily criminal procedure. India has also enacted the Bharatiya Nyaya Sanhita (BNS) and the Bharatiya Nagarik Suraksha Sanhita (BNSS). This application must not silently treat IPC text as BNS text or CrPC text as BNSS text. If a retrieved document is labelled IPC or CrPC, that is the document that was indexed — not proof of current law. Confirm which statute currently applies from official sources.",
+    "source": "Educational sample — not official legal text",
+    "language": "en",
+    "verification_status": "educational_sample",
+    "last_updated": "educational-seed"
+  },
+  {
+    "id": 6,
+    "act_name": "Right to Information Act, 2005",
+    "section": "3",
+    "title": "Right to information (short public excerpt)",
+    "text": "Section 3 of the Right to Information Act, 2005 is commonly published as: \"Subject to the provisions of this Act, all citizens shall have the right to information.\" This is a short excerpt only. Definitions, exemptions, procedure, and amendments are not included. Confirm the current official text on India Code or another official publication before relying on it.",
+    "source": "https://www.indiacode.nic.in/ (verify current official text of the RTI Act, 2005)",
+    "language": "en",
+    "verification_status": "short_public_excerpt_unverified_version",
+    "last_updated": "educational-seed"
+  }
+]

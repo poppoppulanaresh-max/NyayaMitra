@@ -1,0 +1,62 @@
+[
+  {
+    "id": 1,
+    "question": "What does Nyaya Mitra use retrieved documents for?",
+    "choice_a": "To invent missing section numbers",
+    "choice_b": "To ground answers in indexed text when possible",
+    "choice_c": "To replace a qualified lawyer",
+    "choice_d": "To guarantee a court outcome",
+    "answer": "B",
+    "explanation": "The assistant should retrieve indexed passages and avoid answering beyond that evidence.",
+    "source": "Educational — application design, not a statute",
+    "educational_label": true
+  },
+  {
+    "id": 2,
+    "question": "If the knowledge base does not contain supporting text, what should the system do?",
+    "choice_a": "Guess using general internet knowledge and hide that fact",
+    "choice_b": "Invent a citation so the answer looks complete",
+    "choice_c": "Say that sufficient supporting text was not found and point the user to official sources or a professional",
+    "choice_d": "Repeat a random Act name",
+    "answer": "C",
+    "explanation": "Conservative legal-information systems should refuse to fill gaps with uncited claims.",
+    "source": "Educational — application design, not a statute",
+    "educational_label": true
+  },
+  {
+    "id": 3,
+    "question": "Which of the following is a public portal often used to look up official Central Acts?",
+    "choice_a": "A random social-media page",
+    "choice_b": "India Code (indiacode.nic.in)",
+    "choice_c": "An unofficial blog with no citation",
+    "choice_d": "A screenshot in a chat group",
+    "answer": "B",
+    "explanation": "India Code is a commonly used official portal for Central Acts. Users should still check they have the correct current version.",
+    "source": "Educational citizen guidance — verify portal yourself",
+    "educational_label": true
+  },
+  {
+    "id": 4,
+    "question": "Uploading a PDF in the admin screen means which of the following?",
+    "choice_a": "The document is automatically officially verified law",
+    "choice_b": "The document is stored and, if text can be extracted, indexed for search — verification remains separate",
+    "choice_c": "The document becomes a Supreme Court judgment",
+    "choice_d": "OCR is guaranteed to read scanned pages",
+    "answer": "B",
+    "explanation": "Administrator upload is not official verification. Scanned PDFs may fail extraction because OCR is not implemented here.",
+    "source": "Educational — application design, not a statute",
+    "educational_label": true
+  },
+  {
+    "id": 5,
+    "question": "Why can IPC text and BNS text not be treated as interchangeable in this application?",
+    "choice_a": "Because they always have identical section numbers",
+    "choice_b": "Because silently substituting one statute for another can misstate which law was actually retrieved",
+    "choice_c": "Because neither statute exists",
+    "choice_d": "Because FAISS requires them to be the same",
+    "answer": "B",
+    "explanation": "Educational note: older and newer criminal statutes must be identified as the documents actually indexed, not swapped.",
+    "source": "Educational citizen guidance — not a statutory excerpt",
+    "educational_label": true
+  }
+]
