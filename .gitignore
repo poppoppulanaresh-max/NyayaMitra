@@ -9,3 +9,4 @@ __pycache__/
 .mypy_cache/
 data/*.index
 data/faiss*
+.streamlit/secrets.toml

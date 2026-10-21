@@ -241,7 +241,7 @@ class NyayMitraRAG:
         }
 
     def _llm(self):
-        key = (os.getenv("OPENAI_API_KEY") or "").strip()
+        key = (OPENAI_API_KEY or "").strip()
         if OpenAI is None or not key:
             return None
         kwargs = {"api_key": key, "timeout": LLM_TIMEOUT_SECONDS}

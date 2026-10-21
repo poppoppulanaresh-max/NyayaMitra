@@ -1,4 +1,4 @@
-"""Central configuration. Secrets come from environment variables only."""
+"""Central configuration for local, Render, and Streamlit Cloud deployments."""
 from __future__ import annotations
 
 import os
@@ -10,6 +10,22 @@ try:
     load_dotenv()
 except ImportError:
     pass
+
+
+def _setting(name: str, default: str = "") -> str:
+    """Read environment first, then Streamlit Cloud secrets, then default."""
+    value = os.getenv(name)
+    if value is not None:
+        return value
+    try:
+        import streamlit as st
+
+        value = st.secrets.get(name, default)
+    except Exception:
+        # Streamlit is optional for utility scripts/tests, and local runs need
+        # not have a secrets.toml file.
+        value = default
+    return default if value is None else str(value)
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("NYAYA_DATA_DIR", BASE_DIR / "data"))
@@ -25,14 +41,14 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
 # Keep startup fast and independent of a model download. Enable explicitly in
 # .env when semantic retrieval is desired; keyword retrieval works offline.
 USE_EMBEDDINGS = os.getenv("NYAYA_USE_EMBEDDINGS", "0") == "1"
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4.1-mini")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL") or None
-LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "45"))
+LLM_MODEL = _setting("LLM_MODEL", "gpt-4.1-mini")
+OPENAI_API_KEY = _setting("OPENAI_API_KEY")
+OPENAI_BASE_URL = _setting("OPENAI_BASE_URL") or None
+LLM_TIMEOUT_SECONDS = float(_setting("LLM_TIMEOUT_SECONDS", "45"))
 
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
-PUBLIC_MODE = os.getenv("NYAYA_PUBLIC_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
+ADMIN_USERNAME = _setting("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = _setting("ADMIN_PASSWORD")
+PUBLIC_MODE = _setting("NYAYA_PUBLIC_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
 MIN_EXTRACT_CHARS = int(os.getenv("MIN_EXTRACT_CHARS", "80"))
@@ -58,4 +74,4 @@ DISCLAIMER = (
 
 
 def openai_configured() -> bool:
-    return bool((os.getenv("OPENAI_API_KEY") or "").strip())
+    return bool(OPENAI_API_KEY.strip())

@@ -102,7 +102,15 @@ Tests use synthetic PDFs and mocked LLM clients. They do not need a paid API key
 
 SQLite file: `data/nyay_mitra.db` (ignored by git). Restarting the app keeps indexed documents, quiz results, and chat rows. Chat history is **not** private per user; anyone with this computer and the app can see recent questions stored locally.
 
-## Public demo deployment (Render)
+## Free public demo deployment (Streamlit Community Cloud)
+
+The app can run on Streamlit Community Cloud without a paid server plan. Connect the GitHub repository `poppoppulanaresh-max/NyayaMitra`, choose the `main` branch and `app.py` as the entrypoint, then add the values from `streamlit-secrets.example.toml` under **App settings → Secrets**. At minimum, set `NYAYA_PUBLIC_MODE = "1"`. Choose a unique `ADMIN_PASSWORD`; do not paste a real password into this repository. The `.streamlit/secrets.toml` file is ignored by Git if you create it locally.
+
+`OPENAI_API_KEY` is optional. Without it, the app uses its offline source-based answer mode and cannot translate arbitrary retrieved legal passages. If you add a key, questions and retrieved legal excerpts are sent to that AI provider to generate answers and translations. Tell visitors this and advise them not to enter private or sensitive case details.
+
+Streamlit Community Cloud uses an ephemeral local filesystem. PDFs committed in `uploads/` are included with the app and can be re-indexed after restart, but admin-uploaded PDFs, SQLite chat/quiz records, and other runtime changes are not durable and may be lost on restart or redeploy. Public mode avoids keeping shared visitor chat/search/quiz histories. Keep a separate copy of any source PDFs. For persistent administrator uploads and a database, use the paid disk-backed Render configuration below.
+
+## Paid public demo deployment (Render)
 
 `render.yaml` configures one Render web service with a persistent disk mounted at `/var/data`. This is required: Render's free web service filesystem is ephemeral, and uploaded laws and the SQLite database would disappear on restart. The Blueprint uses a paid Starter web service and a 1 GB persistent disk; review current plan and storage charges in Render before creating it. A disk-backed service is single-instance and may briefly stop during deploys.
 
