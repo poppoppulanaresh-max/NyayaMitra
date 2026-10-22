@@ -256,6 +256,8 @@ class DocumentProcessor:
         if not doc or not doc.get("active"):
             raise DocumentProcessingError("Document not found.", "missing")
         path = self.uploads_dir / doc["stored_filename"]
+        if not path.exists() and getattr(self.db, "library_db", None):
+            path = self.db.library_db.uploads_dir / doc["stored_filename"]
         if not path.exists():
             raise DocumentProcessingError("Stored PDF file is missing.", "missing_file")
         data = path.read_bytes()

@@ -16,9 +16,17 @@ def utc_now() -> str:
 
 
 class Database:
-    def __init__(self, db_path: Path):
+    def __init__(
+        self,
+        db_path: Path,
+        library_db: "Database | None" = None,
+        uploads_dir: Path | None = None,
+    ):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.library_db = library_db if library_db and library_db.db_path.resolve() != self.db_path.resolve() else None
+        self.uploads_dir = Path(uploads_dir or self.db_path.parent / "uploads")
+        self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self.init_schema()
 
     @contextmanager
@@ -124,6 +132,15 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL
+                )"""
+            )
+            con.execute(
+                """CREATE TABLE IF NOT EXISTS accounts (
+                    user_id TEXT PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    password_hash TEXT NOT NULL,
+                    is_admin INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
                 )"""
             )
             con.execute(
@@ -277,16 +294,50 @@ class Database:
         with self.connect() as con:
             return con.execute("SELECT COUNT(*) AS c FROM admins").fetchone()["c"]
 
+    def create_account(self, user_id: str, username: str, password_hash: str, is_admin: bool = False) -> None:
+        with self.connect() as con:
+            con.execute(
+                "INSERT INTO accounts(user_id, username, password_hash, is_admin, created_at) VALUES(?, ?, ?, ?, ?)",
+                (user_id, username.strip(), password_hash, int(is_admin), utc_now()),
+            )
+
+    def get_account(self, username: str) -> Optional[dict[str, Any]]:
+        with self.connect() as con:
+            row = con.execute(
+                "SELECT user_id, username, password_hash, is_admin, created_at FROM accounts WHERE username = ? COLLATE NOCASE",
+                (username.strip(),),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def account_count(self) -> int:
+        with self.connect() as con:
+            return con.execute("SELECT COUNT(*) AS c FROM accounts").fetchone()["c"]
+
+    def sync_admin_account(self, username: str, password_hash: str) -> None:
+        with self.connect() as con:
+            con.execute(
+                "UPDATE accounts SET password_hash = ?, is_admin = 1 WHERE username = ? COLLATE NOCASE",
+                (password_hash, username.strip()),
+            )
+
     def find_document_by_hash(self, file_hash: str) -> Optional[sqlite3.Row]:
         with self.connect() as con:
-            return con.execute(
+            row = con.execute(
                 "SELECT * FROM documents WHERE file_hash = ? AND active = 1", (file_hash,)
             ).fetchone()
+            overridden = con.execute("SELECT id, active FROM documents WHERE file_hash = ?", (file_hash,)).fetchone()
+        if row:
+            return row
+        if self.library_db and not (overridden and not overridden["active"]):
+            return self.library_db.find_document_by_hash(file_hash)
+        return None
 
     def get_document(self, document_id: str) -> Optional[dict[str, Any]]:
         with self.connect() as con:
             row = con.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
-            return dict(row) if row else None
+        if row:
+            return dict(row)
+        return self.library_db.get_document(document_id) if self.library_db else None
 
     def list_documents(self, active_only: bool = True) -> list[dict[str, Any]]:
         sql = "SELECT * FROM documents"
@@ -295,7 +346,18 @@ class Database:
             sql += " WHERE active = 1"
         sql += " ORDER BY upload_date DESC"
         with self.connect() as con:
-            return [dict(r) for r in con.execute(sql, params).fetchall()]
+            local = [dict(r) for r in con.execute(sql, params).fetchall()]
+            local_all = con.execute("SELECT id, file_hash FROM documents").fetchall()
+        if not self.library_db:
+            return local
+        overridden_ids = {str(row["id"]) for row in local_all}
+        local_hashes = {str(row["file_hash"]) for row in local_all if row["file_hash"]}
+        shared = [
+            row for row in self.library_db.list_documents(active_only=active_only)
+            if str(row.get("id")) not in overridden_ids
+            and (not row.get("file_hash") or str(row.get("file_hash")) not in local_hashes)
+        ]
+        return sorted(local + shared, key=lambda row: str(row.get("upload_date") or ""), reverse=True)
 
     def upsert_document(self, record: dict[str, Any]) -> None:
         keys = [
@@ -352,6 +414,18 @@ class Database:
                 )
 
     def deactivate_document(self, document_id: str) -> None:
+        # A profile can hide a shared library item without changing the common
+        # library for other users by storing an inactive local override.
+        if self.library_db:
+            with self.connect() as con:
+                local_exists = con.execute("SELECT 1 FROM documents WHERE id = ?", (document_id,)).fetchone()
+            if not local_exists:
+                shared = self.library_db.get_document(document_id)
+                if shared:
+                    tombstone = dict(shared)
+                    tombstone["active"] = 0
+                    tombstone["indexing_status"] = "removed"
+                    self.upsert_document(tombstone)
         with self.connect() as con:
             con.execute("UPDATE documents SET active = 0, indexing_status = ? WHERE id = ?", ("removed", document_id))
             con.execute("UPDATE chunks SET active = 0 WHERE document_id = ?", (document_id,))
@@ -361,7 +435,20 @@ class Database:
             rows = con.execute(
                 "SELECT * FROM chunks WHERE active = 1 AND length(trim(text)) > 0 ORDER BY id"
             ).fetchall()
-            return [dict(r) for r in rows]
+            local_chunks = [dict(r) for r in rows]
+            local_docs = con.execute("SELECT id, file_hash FROM documents").fetchall()
+        if not self.library_db:
+            return local_chunks
+        overridden_ids = {str(row["id"]) for row in local_docs}
+        local_hashes = {str(row["file_hash"]) for row in local_docs if row["file_hash"]}
+        shared_docs = self.library_db.list_documents(active_only=False)
+        shared_hash_by_id = {str(row["id"]): str(row.get("file_hash") or "") for row in shared_docs}
+        shared_chunks = [
+            row for row in self.library_db.active_chunks()
+            if str(row.get("document_id")) not in overridden_ids
+            and shared_hash_by_id.get(str(row.get("document_id")), "") not in local_hashes
+        ]
+        return shared_chunks + local_chunks
 
     def search_chunks(
         self,
@@ -404,20 +491,50 @@ class Database:
             params.extend([like, like])
         sql = f"SELECT * FROM chunks WHERE {' AND '.join(clauses)} ORDER BY act_name, id LIMIT 200"
         with self.connect() as con:
-            return [dict(r) for r in con.execute(sql, params).fetchall()]
+            local = [dict(r) for r in con.execute(sql, params).fetchall()]
+            local_docs = con.execute("SELECT id, file_hash FROM documents").fetchall()
+        if not self.library_db:
+            return local
+        overridden_ids = {str(row["id"]) for row in local_docs}
+        local_hashes = {str(row["file_hash"]) for row in local_docs if row["file_hash"]}
+        shared_docs = self.library_db.list_documents(active_only=False)
+        shared_hash_by_id = {str(row["id"]): str(row.get("file_hash") or "") for row in shared_docs}
+        shared = [
+            row for row in self.library_db.search_chunks(act_name, section_number, section_title, keyword, document_id, category)
+            if str(row.get("document_id")) not in overridden_ids
+            and shared_hash_by_id.get(str(row.get("document_id")), "") not in local_hashes
+        ]
+        return (shared + local)[:200]
 
     def available_acts(self) -> list[str]:
         with self.connect() as con:
             rows = con.execute(
                 "SELECT DISTINCT act_name FROM chunks WHERE active = 1 AND act_name IS NOT NULL AND act_name != '' ORDER BY act_name"
             ).fetchall()
-            return [r["act_name"] for r in rows]
+            local = [r["act_name"] for r in rows]
+        if not self.library_db:
+            return local
+        return sorted(set(local) | set(self.library_db.available_acts()))
 
     def counts(self) -> dict[str, int]:
         with self.connect() as con:
-            docs = con.execute("SELECT COUNT(*) AS c FROM documents WHERE active = 1").fetchone()["c"]
-            chunks = con.execute("SELECT COUNT(*) AS c FROM chunks WHERE active = 1").fetchone()["c"]
-            return {"documents": docs, "chunks": chunks}
+            local_docs = con.execute("SELECT COUNT(*) AS c FROM documents WHERE active = 1").fetchone()["c"]
+            local_chunks = con.execute("SELECT COUNT(*) AS c FROM chunks WHERE active = 1").fetchone()["c"]
+            local_rows = con.execute("SELECT id, file_hash, active FROM documents").fetchall()
+        if not self.library_db:
+            return {"documents": local_docs, "chunks": local_chunks}
+        local_ids = {str(row["id"]) for row in local_rows}
+        local_hashes = {str(row["file_hash"]) for row in local_rows if row["file_hash"] and row["active"]}
+        shared_docs = [
+            row for row in self.library_db.list_documents()
+            if str(row.get("id")) not in local_ids
+            and (not row.get("file_hash") or str(row.get("file_hash")) not in local_hashes)
+        ]
+        shared_doc_ids = {str(row["id"]) for row in shared_docs}
+        shared_chunk_count = sum(
+            1 for row in self.library_db.active_chunks() if str(row.get("document_id")) in shared_doc_ids
+        )
+        return {"documents": local_docs + len(shared_docs), "chunks": local_chunks + shared_chunk_count}
 
     def log_search(self, query: str, category: str) -> None:
         with self.connect() as con:
