@@ -23,10 +23,11 @@ from translations import LANGS, suggested_questions, suggested_question_prompts,
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("nyaya.app")
+LEGAL_HERO_IMAGE = Path(__file__).resolve().parent / "assets" / "courthouse-hero.jpg"
 
 st.set_page_config(
     page_title="Nyaya Mitra",
-    page_icon="⚖️",
+    page_icon=str(LEGAL_HERO_IMAGE),
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -95,8 +96,10 @@ html,body,.stApp{overflow-x:hidden}
 .stApp{background:var(--bg);min-height:100vh}
 .block-container{padding:1.15rem clamp(1rem,2vw,2rem) 2rem;max-width:1680px;width:100%;box-sizing:border-box}
 header[data-testid="stHeader"],div[data-testid="stToolbar"],#MainMenu{display:none!important}
-[data-testid="stSidebar"]{background:#fff;border-right:1px solid var(--line);min-width:232px;max-width:270px}
+[data-testid="stSidebar"]{background:#fff;border-right:1px solid var(--line);width:212px!important;min-width:212px!important;max-width:212px!important}
 [data-testid="stSidebar"]>div:first-child{padding-top:1rem}
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"]{gap:.45rem}
+[data-testid="stSidebar"] div.stButton>button{min-height:38px;padding:.35rem .6rem;text-align:left;font-size:13px;border-radius:9px}
 .brand{display:flex;align-items:center;gap:12px;background:#fff;padding:11px 14px;border:1px solid var(--line);border-radius:15px;box-shadow:var(--shadow);min-height:64px}
 .brand-mark{width:42px;height:42px;border-radius:13px;background:#fff4f5;color:var(--red);display:flex;align-items:center;justify-content:center;font-size:22px;border:1px solid #f3d6db}
 .brand-name{font-size:25px;font-weight:760;letter-spacing:-.7px;color:var(--navy);line-height:1}
@@ -129,6 +132,11 @@ div[data-testid="stRadio"] label{border-radius:9px;padding:5px 8px}
 .chat-heading p{margin:3px 0 0;color:var(--muted);font-size:13px}
 .chat-status{display:flex;align-items:center;gap:8px;background:#f7f9fb;border:1px solid var(--line);border-radius:10px;padding:10px 12px;color:#34445b;font-size:12px;white-space:normal}
 .chat-status-mark{color:var(--red);font-size:17px}
+.topbar-copy{font-size:11px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;font-weight:700}
+.home-hero{display:grid;grid-template-columns:1.2fr .8fr;gap:22px;align-items:center;overflow:hidden}
+div[data-testid="stImage"] img{display:block;width:100%;object-fit:cover;border-radius:13px;border:1px solid var(--line)}
+.home-hero-image img{height:210px}
+.chat-hero-image img{height:112px}
 .chat-surface{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px;min-height:400px;box-shadow:0 1px 3px rgba(20,33,61,.04)}
 [data-testid="stVerticalBlockBorderWrapper"]{border:1px solid var(--line)!important;border-radius:16px!important;background:#fff;box-shadow:var(--shadow)}
 .chat-welcome{background:linear-gradient(120deg,#fffafa,#fff 72%);border:1px solid #f1dfe2;border-radius:15px;padding:20px;margin:0 0 16px;line-height:1.7}
@@ -149,7 +157,7 @@ div[data-testid="stRadio"] label{border-radius:9px;padding:5px 8px}
 footer{visibility:hidden}
 @media(max-width:1100px){.block-container{padding-left:.7rem;padding-right:.7rem}.chat-heading{align-items:flex-start;flex-direction:column}.chat-status{width:100%}}
 @media(max-width:1000px){.block-container{padding-left:1rem;padding-right:1rem}div[data-testid="stHorizontalBlock"]{flex-wrap:wrap!important}div[data-testid="stHorizontalBlock"]>div[data-testid="column"]{min-width:min(100%,620px)!important;width:100%!important;flex:1 1 100%!important}}
-@media(max-width:760px){.brand-name{font-size:21px}.block-container{padding:.5rem .55rem 1rem}.chat-surface{padding:10px;min-height:0}.panel{padding:14px}.chat-heading h1{font-size:22px}}
+@media(max-width:760px){[data-testid="stSidebar"]{width:min(84vw,280px)!important;min-width:min(84vw,280px)!important;max-width:min(84vw,280px)!important}.brand-name{font-size:21px}.block-container{padding:.5rem .55rem 1rem}.chat-surface{padding:10px;min-height:0}.panel{padding:14px}.chat-heading h1{font-size:22px}.home-hero{grid-template-columns:1fr}.home-hero-image img{height:170px}}
 @media(max-height:820px){.block-container{padding-top:.8rem}}
 button:focus,input:focus,textarea:focus,select:focus{outline:2px solid var(--red)!important;outline-offset:2px}
 </style>
@@ -213,10 +221,10 @@ def extract_act_number(document: dict[str, Any], chunks: list[dict[str, Any]]) -
 
 
 def header(lang: str) -> None:
-    h1, h2, h3 = st.columns([2.0, 4.5, 1.5], vertical_alignment="center")
+    h1, h2, h3 = st.columns([2.1, 5.0, 1.1], vertical_alignment="center")
     with h1:
         st.markdown(
-            '<div class="brand"><div class="brand-mark">⚖</div><div><div class="brand-name">Nyaya <span>Mitra</span></div>'
+            '<div class="brand"><div class="brand-mark">N</div><div><div class="brand-name">Nyaya <span>Mitra</span></div>'
             f'<div class="brand-sub">{t(lang, "brand_sub")}</div></div></div>',
             unsafe_allow_html=True,
         )
@@ -227,7 +235,7 @@ def header(lang: str) -> None:
             cats = [t(lang, "act_name_option"), t(lang, "act_number_option")]
             cat_en = ["name", "number"]
             cat_label = q2.selectbox(t(lang, "all_categories"), cats, label_visibility="collapsed")
-            submitted = q3.form_submit_button("🔍 " + t(lang, "search"), type="primary", use_container_width=True)
+            submitted = q3.form_submit_button(t(lang, "search"), type="primary", use_container_width=True)
         if submitted and (term or "").strip():
             if not config.PUBLIC_MODE:
                 get_db().log_search(term.strip(), cat_en[cats.index(cat_label)])
@@ -240,7 +248,7 @@ def header(lang: str) -> None:
     with h3:
         st.selectbox(
             t(lang, "language"), list(LANGS.keys()), key="language",
-            format_func=lambda choice: f"🌐  {choice}", label_visibility="collapsed",
+            format_func=lambda choice: choice, label_visibility="collapsed",
         )
 
 
@@ -296,11 +304,16 @@ def require_admin(lang: str) -> bool:
 
 
 def page_home(lang: str, db: Database, searcher: LegalSearch) -> None:
-    st.markdown(
-        f'<div class="panel hero"><div class="kicker">Nyaya Mitra</div><h1>{t(lang, "welcome_title")}</h1>'
-        f'<p>{t(lang, "welcome_body")}</p></div>',
-        unsafe_allow_html=True,
-    )
+    hero_copy, hero_image = st.columns([1.2, .8], gap="large", vertical_alignment="center")
+    with hero_copy:
+        st.markdown(
+            f'<div class="panel hero"><div class="kicker">Legal information · Citizen guidance</div>'
+            f'<h1>{t(lang, "welcome_title")}</h1><p>{t(lang, "welcome_body")}</p></div>',
+            unsafe_allow_html=True,
+        )
+    with hero_image:
+        if LEGAL_HERO_IMAGE.exists():
+            st.image(str(LEGAL_HERO_IMAGE), use_container_width=True, caption="Courthouse exterior")
     docs = [d for d in db.list_documents(active_only=True) if str(d.get("original_filename") or "").lower().endswith(".pdf")]
     docs.sort(key=lambda d: (act_year(d.get("act_name", "")) or 0, d.get("upload_date", "")), reverse=True)
     st.subheader(t(lang, "home_updates_title"))
@@ -331,7 +344,7 @@ def page_home(lang: str, db: Database, searcher: LegalSearch) -> None:
                         st.session_state.act_search_input = str(doc.get("act_name") or "")
                         st.session_state.page = "laws"
                         st.rerun()
-    st.markdown(f'<div class="disclaimer">⚖️ {t(lang, "library_updates_only")}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="disclaimer">{t(lang, "library_updates_only")}</div>', unsafe_allow_html=True)
 
 
 def localized_verification_status(lang: str, status: str) -> str:
@@ -384,35 +397,25 @@ def page_chat(lang: str, db: Database, rag: NyayMitraRAG) -> None:
 
     center, right = st.columns([7.1, 2.9], gap="medium")
     with center:
-        st.markdown(
-            f'<div class="chat-heading"><div><h1>🤖 {t(lang, "chat_title")}</h1>'
-            f'<p>{t(lang, "chat_subtitle")}</p></div>'
-            f'<div class="chat-status"><span class="chat-status-mark">✦</span> {t(lang, "powered")}</div></div>',
-            unsafe_allow_html=True,
-        )
+        title_col, image_col = st.columns([3.5, 1.2], gap="medium", vertical_alignment="center")
+        with title_col:
+            st.markdown(
+                f'<div class="chat-heading"><div><div class="topbar-copy">Nyaya Mitra · Legal information</div>'
+                f'<h1>{t(lang, "chat_title")}</h1><p>{t(lang, "chat_subtitle")}</p></div>'
+                f'<div class="chat-status">{t(lang, "powered")}</div></div>',
+                unsafe_allow_html=True,
+            )
+        with image_col:
+            if LEGAL_HERO_IMAGE.exists():
+                st.image(str(LEGAL_HERO_IMAGE), use_container_width=True)
         with st.container(border=True):
             if not st.session_state.messages:
                 st.markdown(
-                    f'<div class="chat-welcome"><strong>⚖️ {t(lang, "greeting")}</strong><br>'
-                    f'{t(lang, "welcome")}</div>',
+                    f'<div class="chat-welcome"><strong>{t(lang, "greeting")}</strong></div>',
                     unsafe_allow_html=True,
                 )
-                actions = [
-                    ("📖 " + t(lang, "action_explain_title"), t(lang, "action_explain_example"), "Explain section 3 of the Protection of Women from Domestic Violence Act, 2005 using only the indexed text."),
-                    ("📄 " + t(lang, "action_summarize_title"), t(lang, "action_summarize_example"), "Summarize the purpose and structure of the Bharatiya Nyaya Sanhita, 2023 using only the indexed text."),
-                    ("⚖️ " + t(lang, "action_compare_title"), t(lang, "action_compare_example"), "Compare the subjects covered by the Consumer Protection Act, 2019 and the Information Technology Act, 2000 using indexed text."),
-                    ("💡 " + t(lang, "action_general_title"), t(lang, "action_general_example"), "What is an FIR? Answer only from the indexed documents and say if they do not contain enough information."),
-                ]
-                st.markdown(f'<div class="chat-actions-title">{t(lang, "common_task")}</div>', unsafe_allow_html=True)
-                action_cols = st.columns(4, gap="small")
-                for index, (title, example, prompt) in enumerate(actions):
-                    with action_cols[index]:
-                        st.markdown(f'<div class="chat-action-card"><strong>{title}</strong><span>{example}</span></div>', unsafe_allow_html=True)
-                        if st.button(t(lang, "ask"), key=f"chat_action_{index}", use_container_width=True, help=prompt):
-                            st.session_state.pending_question = prompt
-                            st.rerun()
             for i, msg in enumerate(st.session_state.messages):
-                with st.chat_message(msg["role"], avatar="⚖️" if msg["role"] == "assistant" else "👤"):
+                with st.chat_message(msg["role"], avatar="N" if msg["role"] == "assistant" else "U"):
                     st.markdown(msg["content"])
                     if msg.get("sources"):
                         render_sources(lang, msg["sources"])
@@ -459,17 +462,17 @@ def page_chat(lang: str, db: Database, rag: NyayMitraRAG) -> None:
             if cols[2].button(t(lang, "cancel")):
                 st.session_state.confirm_clear = False
                 st.rerun()
-        st.markdown(f'<div class="disclaimer">🛡️ {t(lang, "disclaimer")}<br>{t(lang, "disclaimer_full")}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="disclaimer">{t(lang, "disclaimer")}<br>{t(lang, "disclaimer_full")}</div>', unsafe_allow_html=True)
     with right:
         with st.container():
-            st.markdown(f'<div class="rail-title">💡 {t(lang, "suggested")}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="rail-title">{t(lang, "suggested")}</div>', unsafe_allow_html=True)
             for i, (label, prompt) in enumerate(zip(suggested_questions(lang)[:4], suggested_question_prompts()[:4])):
                 if st.button(label, key=f"sug_{i}", use_container_width=True):
                     st.session_state.pending_question = prompt
                     st.rerun()
             if not config.PUBLIC_MODE:
                 recent_header, view_header = st.columns([4, 1])
-                recent_header.markdown(f'<div class="rail-title">🕒 {t(lang, "recent_chats")}</div>', unsafe_allow_html=True)
+                recent_header.markdown(f'<div class="rail-title">{t(lang, "recent_chats")}</div>', unsafe_allow_html=True)
                 total_recent = db.list_chat_sessions(100)
                 if len(total_recent) > 4:
                     if view_header.button(t(lang, "less") if st.session_state.show_all_chats else t(lang, "all"), key="toggle_recent_chats", help=t(lang, "recent_chats")):
