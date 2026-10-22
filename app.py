@@ -161,6 +161,17 @@ def get_auth_db() -> Database:
     return db
 
 
+@st.cache_resource
+def get_law_library_db() -> Database:
+    """Index bundled public law PDFs once and share them read-only by default."""
+    library_dir = config.DATA_DIR / "law_library"
+    uploads_dir = library_dir / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    db = Database(library_dir / "nyaya_mitra.db", uploads_dir=uploads_dir)
+    seed_bundled_pdfs(db, uploads_dir)
+    return db
+
+
 def ensure_account_schema(db: Database) -> None:
     """Create the account table for both current and older SQLite app databases."""
     with db.connect() as con:
@@ -205,10 +216,13 @@ def get_profile_db(profile_id: str) -> Database:
     profile_dir = config.DATA_DIR / "profiles" / profile_id
     uploads_dir = profile_dir / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
-    db = Database(profile_dir / "nyaya_mitra.db")
+    db = Database(
+        profile_dir / "nyaya_mitra.db",
+        library_db=get_law_library_db(),
+        uploads_dir=uploads_dir,
+    )
     db.seed_knowledge(load_json(KB_SEED_PATH))
     db.seed_quiz(load_json(QUIZ_SEED_PATH))
-    seed_bundled_pdfs(db, uploads_dir)
     return db
 
 
@@ -221,9 +235,18 @@ def get_db() -> Database:
 
 
 def profile_upload_dir(db: Database) -> Path:
-    uploads_dir = db.db_path.parent / "uploads"
+    uploads_dir = db.uploads_dir
     uploads_dir.mkdir(parents=True, exist_ok=True)
     return uploads_dir
+
+
+def document_pdf_path(db: Database, stored_filename: str) -> Path:
+    local_path = profile_upload_dir(db) / stored_filename
+    if local_path.is_file():
+        return local_path
+    if db.library_db:
+        return db.library_db.uploads_dir / stored_filename
+    return local_path
 
 
 @st.cache_resource
@@ -635,7 +658,7 @@ def render_pdf_law_library(lang: str, db: Database, query: str = "") -> None:
             )
             if doc.get("version_or_date"):
                 st.caption(str(doc["version_or_date"]))
-            stored_pdf = profile_upload_dir(db) / str(doc.get("stored_filename") or "")
+            stored_pdf = document_pdf_path(db, str(doc.get("stored_filename") or ""))
             if stored_pdf.is_file():
                 st.download_button(
                     "Download PDF",

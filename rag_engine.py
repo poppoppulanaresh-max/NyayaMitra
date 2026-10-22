@@ -121,6 +121,12 @@ class NyayMitraRAG:
     def _query_act_hint(query: str) -> str:
         q = query.casefold()
         if any(term in q for term in (
+            "electronic records", "digital evidence", "electronic evidence",
+            "इलेक्ट्रॉनिक रिकॉर्ड", "डिजिटल साक्ष्य", "इलेक्ट्रॉनिक साक्ष्य",
+            "ఎలక్ట్రానిక్ రికార్డులు", "డిజిటల్ ఆధారాలు", "డిజిటల్ సాక్ష్యం", "ఎలక్ట్రానిక్ ఆధారాలు",
+        )):
+            return "digital_evidence"
+        if any(term in q for term in (
             "indian contract act", "contract act", "भारतीय संविदा अधिनियम", "भारतीय अनुबंध अधिनियम",
             "భారతీయ ఒప్పందాల చట్టం", "భారత ఒప్పందాల చట్టం",
         )):
@@ -149,6 +155,8 @@ class NyayMitraRAG:
             return query + " Bharatiya Nagarik Suraksha Sanhita section 173 information cognizable offence police station electronic communication"
         if act_hint == "crpc":
             return query + " Code of Criminal Procedure section 154 information cognizable offence first information report"
+        if act_hint == "digital_evidence":
+            return query + " Bharatiya Sakshya Adhiniyam electronic digital records evidence admissibility section 61 62 63 certificate Information Technology Act electronic records legal recognition"
         return query
 
     def _build_index(self) -> None:
@@ -304,6 +312,10 @@ class NyayMitraRAG:
                 if act_hint == "bnss" and "bharatiya nagarik suraksha" not in act_name:
                     continue
                 if act_hint == "crpc" and not any(term in act_name for term in ("criminal procedure", "crpc")):
+                    continue
+                if act_hint == "digital_evidence" and not any(
+                    term in act_name for term in ("bharatiya sakshya", "information technology", "it act")
+                ):
                     continue
             stype = row.get("score_type")
             score = float(row.get("score") or 0)
