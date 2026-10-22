@@ -71,3 +71,46 @@ def test_remove_and_reindex(processor, rag):
     rag.reload()
     assert all(h.get("document_id") != record["id"] for h in rag.search("zebra token"))
     assert rag.db.get_document(record["id"])["active"] == 0
+
+
+def test_replacement_failure_leaves_original_intact(processor, rag):
+    original_data = text_pdf_bytes("Section 10 Initial valid statute content with original antelope keyword. " * 8)
+    record = processor.ingest("valid_original.pdf", original_data, act_name="Antelope Act", source_url="https://example.test/antelope")
+    assert record["indexing_status"] == "indexed"
+    original_id = record["id"]
+
+    # Attempt to replace with corrupt PDF
+    with pytest.raises(DocumentProcessingError) as exc_corrupt:
+        processor.ingest("corrupt_update.pdf", b"%PDF-1.4\ncorrupt body", document_id=original_id)
+    assert exc_corrupt.value.code in {"corrupt", "invalid_type", "ocr_needed"}
+
+    # Attempt to replace with scanned/empty PDF
+    with pytest.raises(DocumentProcessingError) as exc_scan:
+        processor.ingest("scanned_update.pdf", blank_pdf_bytes(), document_id=original_id)
+    assert exc_scan.value.code == "ocr_needed"
+
+    # Original document record and chunks must remain active and indexed
+    doc_after_failures = processor.db.get_document(original_id)
+    assert doc_after_failures["indexing_status"] == "indexed"
+    assert doc_after_failures["extraction_status"] == "ok"
+    assert doc_after_failures["active"] == 1
+    chunks = processor.db.search_chunks(document_id=original_id)
+    assert len(chunks) > 0
+    assert any("antelope" in c["text"].lower() for c in chunks)
+
+    # Now verify successful replacement updates the document without creating duplicates
+    replacement_data = text_pdf_bytes("Section 10 Updated statute content with modified buffalo keyword. " * 8)
+    updated_record = processor.ingest(
+        "updated_version.pdf",
+        replacement_data,
+        act_name="Antelope Act (Updated)",
+        source_url="https://example.test/antelope-v2",
+        document_id=original_id,
+    )
+    assert updated_record["id"] == original_id
+    assert updated_record["act_name"] == "Antelope Act (Updated)"
+    docs = [d for d in processor.db.list_documents() if d["id"] == original_id]
+    assert len(docs) == 1
+    updated_chunks = processor.db.search_chunks(document_id=original_id)
+    assert any("buffalo" in c["text"].lower() for c in updated_chunks)
+    assert not any("antelope" in c["text"].lower() for c in updated_chunks)

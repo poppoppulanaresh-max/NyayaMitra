@@ -46,7 +46,7 @@ OPENAI_API_KEY = _setting("OPENAI_API_KEY")
 OPENAI_BASE_URL = _setting("OPENAI_BASE_URL") or None
 LLM_TIMEOUT_SECONDS = float(_setting("LLM_TIMEOUT_SECONDS", "45"))
 
-ADMIN_USERNAME = _setting("ADMIN_USERNAME", "admin")
+ADMIN_USERNAME = _setting("ADMIN_USERNAME", "NyayaMitra")
 ADMIN_PASSWORD = _setting("ADMIN_PASSWORD")
 PUBLIC_MODE = _setting("NYAYA_PUBLIC_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 

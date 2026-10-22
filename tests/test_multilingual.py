@@ -33,7 +33,7 @@ def test_hindi_ui_and_query(processor, rag, monkeypatch):
     result = rag.answer("व्यक्तिगत स्वतंत्रता personal liberty", lang="hi")
     assert result["sources"]
     assert "personal liberty" in result["sources"][0]["text"].lower()
-    assert result["answer"].startswith("प्राप्त स्रोतों")
+    assert result["answer"].startswith("अनुक्रमित अंशों के आधार पर")
 
 
 def test_telugu_ui_and_query(processor, rag, monkeypatch):
@@ -51,7 +51,7 @@ def test_telugu_ui_and_query(processor, rag, monkeypatch):
     result = rag.answer("personal liberty", lang="te")
     assert result["sources"]
     assert "personal liberty" in result["sources"][0]["text"].lower()
-    assert result["answer"].startswith("సేకరించిన మూలాల ఆధారంగా")
+    assert result["answer"].startswith("సూచికలోని భాగాల ఆధారంగా")
 
 
 def test_mixed_language_question(processor, rag):
@@ -78,3 +78,74 @@ def test_suggested_questions_are_examples_only():
     qs = suggested_questions()
     assert len(qs) >= 6
     assert any("FIR" in q for q in qs)
+
+
+def test_hindi_fir_retrieves_bnss_173(processor, rag, monkeypatch):
+    from tests.pdf_builder import text_pdf_bytes
+
+    processor.ingest(
+        "bnss_sample.pdf",
+        text_pdf_bytes(
+            "CHAPTER XIII INFORMATION TO THE POLICE 173. Information in cognizable cases. "
+            "(1) Every information relating to the commission of a cognizable offence may be given orally "
+            "or by electronic communication to an officer in charge of a police station. " * 4
+        ),
+        act_name="The Bharatiya Nagarik Suraksha Sanhita, 2023",
+        language="en",
+    )
+    rag.reload()
+    monkeypatch.setattr(rag, "_llm", lambda: None)
+    result = rag.answer("एफआईआर दर्ज करने की प्रक्रिया क्या है?", lang="hi")
+    assert result["sources"]
+    assert "Bharatiya Nagarik Suraksha Sanhita" in result["sources"][0]["act_name"]
+    assert result["sources"][0]["section_number"] == "173"
+    assert "173" in result["answer"]
+    assert "भारतीय नागरिक सुरक्षा संहिता" in result["answer"]
+
+
+def test_telugu_fir_retrieves_bnss_173(processor, rag, monkeypatch):
+    from tests.pdf_builder import text_pdf_bytes
+
+    processor.ingest(
+        "bnss_sample.pdf",
+        text_pdf_bytes(
+            "CHAPTER XIII INFORMATION TO THE POLICE 173. Information in cognizable cases. "
+            "(1) Every information relating to the commission of a cognizable offence may be given orally "
+            "or by electronic communication to an officer in charge of a police station. " * 4
+        ),
+        act_name="The Bharatiya Nagarik Suraksha Sanhita, 2023",
+        language="en",
+    )
+    rag.reload()
+    monkeypatch.setattr(rag, "_llm", lambda: None)
+    result = rag.answer("ఎఫ్ఐఆర్ ఎలా నమోదు చేయాలి?", lang="te")
+    assert result["sources"]
+    assert "Bharatiya Nagarik Suraksha Sanhita" in result["sources"][0]["act_name"]
+    assert result["sources"][0]["section_number"] == "173"
+    assert "173" in result["answer"]
+    assert "భారతీయ నాగరిక్ సురక్ష సంహిత" in result["answer"]
+
+
+def test_multilingual_consumer_and_dv_retrieval(processor, rag):
+    from tests.pdf_builder import text_pdf_bytes
+
+    processor.ingest(
+        "cp.pdf",
+        text_pdf_bytes("Section 2 consumer dispute and complaint for defective goods or deficiency in service. " * 6),
+        act_name="The Consumer Protection Act, 2019",
+        language="en",
+    )
+    processor.ingest(
+        "dv.pdf",
+        text_pdf_bytes("Section 18 protection orders for aggrieved person in domestic violence. " * 6),
+        act_name="The Protection of Women from Domestic Violence Act, 2005",
+        language="en",
+    )
+    rag.reload()
+    res_hi = rag.answer("उपभोक्ता शिकायत और दोषपूर्ण सामान", lang="hi")
+    assert res_hi["sources"]
+    assert "Consumer Protection" in res_hi["sources"][0]["act_name"]
+
+    res_te = rag.answer("గృహ హింస రక్షణ ఉత్తర్వు", lang="te")
+    assert res_te["sources"]
+    assert "Domestic Violence" in res_te["sources"][0]["act_name"]
