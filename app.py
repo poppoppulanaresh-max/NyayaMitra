@@ -726,7 +726,9 @@ def page_chat(lang: str, db: Database, rag: NyayMitraRAG) -> None:
                     unsafe_allow_html=True,
                 )
             for i, msg in enumerate(st.session_state.messages):
-                with st.chat_message(msg["role"], avatar="N" if msg["role"] == "assistant" else "U"):
+                # A one-letter avatar is treated as a media path by Streamlit.
+                # Use its built-in role avatar to avoid MediaFileStorageError.
+                with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
                     if msg.get("sources"):
                         render_sources(lang, msg["sources"])
