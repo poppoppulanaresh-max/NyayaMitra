@@ -84,12 +84,52 @@ def seed_bundled_pdfs(db: Database, uploads_dir: Path) -> None:
 @st.cache_resource
 def get_auth_db() -> Database:
     db = Database(DB_PATH)
+    ensure_account_schema(db)
     bootstrap_admin(db)
     if config.ADMIN_PASSWORD:
         stored_hash = db.get_admin_hash(config.ADMIN_USERNAME or "admin")
         if stored_hash:
-            db.sync_admin_account(config.ADMIN_USERNAME or "admin", stored_hash)
+            sync_admin_account(db, config.ADMIN_USERNAME or "admin", stored_hash)
     return db
+
+
+def ensure_account_schema(db: Database) -> None:
+    """Create the account table for both current and older SQLite app databases."""
+    with db.connect() as con:
+        con.execute(
+            """CREATE TABLE IF NOT EXISTS accounts (
+                user_id TEXT PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                password_hash TEXT NOT NULL,
+                is_admin INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+
+
+def get_admin_account(db: Database, username: str) -> dict[str, Any] | None:
+    with db.connect() as con:
+        row = con.execute(
+            "SELECT user_id, username, is_admin FROM accounts WHERE username = ? COLLATE NOCASE",
+            (username.strip(),),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def create_admin_account(db: Database, user_id: str, username: str, password_hash: str) -> None:
+    with db.connect() as con:
+        con.execute(
+            "INSERT INTO accounts(user_id, username, password_hash, is_admin) VALUES(?, ?, ?, 1)",
+            (user_id, username.strip(), password_hash),
+        )
+
+
+def sync_admin_account(db: Database, username: str, password_hash: str) -> None:
+    with db.connect() as con:
+        con.execute(
+            "UPDATE accounts SET password_hash = ?, is_admin = 1 WHERE username = ? COLLATE NOCASE",
+            (password_hash, username.strip()),
+        )
 
 
 @st.cache_resource
@@ -898,16 +938,16 @@ def page_admin_portal(lang: str, auth_db: Database) -> None:
             submitted = st.form_submit_button(t(lang, "admin_portal_access"), type="primary", use_container_width=True)
         if submitted:
             clean_username = username.strip()
-            account = auth_db.get_account(clean_username)
+            account = get_admin_account(auth_db, clean_username)
             configured_username = (config.ADMIN_USERNAME or "admin").strip()
             if clean_username.casefold() == configured_username.casefold() and authenticate(auth_db, clean_username, password):
                 stored_hash = auth_db.get_admin_hash(clean_username) or hash_password(password)
                 if account:
-                    auth_db.sync_admin_account(clean_username, stored_hash)
+                    sync_admin_account(auth_db, clean_username, stored_hash)
                     user_id = str(account["user_id"])
                 else:
                     user_id = uuid.uuid4().hex
-                    auth_db.create_account(user_id, clean_username, stored_hash, True)
+                    create_admin_account(auth_db, user_id, clean_username, stored_hash)
                 establish_account_session(user_id, clean_username, True)
                 st.rerun()
             else:
