@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -12,7 +13,7 @@ from urllib.parse import quote_plus
 import streamlit as st
 
 import config
-from auth import authenticate, bootstrap_admin
+from auth import bootstrap_admin
 from config import DB_PATH, KB_SEED_PATH, QUIZ_SEED_PATH, openai_configured
 from database import Database
 from document_processor import DocumentProcessingError, DocumentProcessor, sha256_bytes
@@ -23,7 +24,12 @@ from translations import LANGS, suggested_questions, suggested_question_prompts,
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("nyaya.app")
-LEGAL_HERO_IMAGE = Path(__file__).resolve().parent / "assets" / "courthouse-hero.jpg"
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+LEGAL_HERO_IMAGE = ASSETS_DIR / "courthouse-hero.jpg"
+LAWS_IMAGE = ASSETS_DIR / "bengaluru-high-court.jpg"
+CHAT_IMAGE = ASSETS_DIR / "legal-books.jpg"
+SDG_16_IMAGE = ASSETS_DIR / "sdg-16.jpg"
+LOGO_IMAGE = ASSETS_DIR / "nyaya-mitra-mark.svg"
 
 st.set_page_config(
     page_title="Nyaya Mitra",
@@ -101,7 +107,7 @@ header[data-testid="stHeader"],div[data-testid="stToolbar"],#MainMenu{display:no
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"]{gap:.45rem}
 [data-testid="stSidebar"] div.stButton>button{min-height:38px;padding:.35rem .6rem;text-align:left;font-size:13px;border-radius:9px}
 .brand{display:flex;align-items:center;gap:12px;background:#fff;padding:11px 14px;border:1px solid var(--line);border-radius:15px;box-shadow:var(--shadow);min-height:64px}
-.brand-mark{width:42px;height:42px;border-radius:13px;background:#fff4f5;color:var(--red);display:flex;align-items:center;justify-content:center;font-size:22px;border:1px solid #f3d6db}
+.brand-mark{width:44px;height:44px;object-fit:contain;flex:none}
 .brand-name{font-size:25px;font-weight:760;letter-spacing:-.7px;color:var(--navy);line-height:1}
 .brand-name span{color:var(--red)}
 .brand-sub{color:var(--muted);font-size:12px;margin-top:4px;font-weight:500}
@@ -133,9 +139,15 @@ div[data-testid="stRadio"] label{border-radius:9px;padding:5px 8px}
 .chat-status{display:flex;align-items:center;gap:8px;background:#f7f9fb;border:1px solid var(--line);border-radius:10px;padding:10px 12px;color:#34445b;font-size:12px;white-space:normal}
 .chat-status-mark{color:var(--red);font-size:17px}
 .topbar-copy{font-size:11px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;font-weight:700}
-.home-hero{display:grid;grid-template-columns:1.2fr .8fr;gap:22px;align-items:center;overflow:hidden}
+.home-hero{max-width:1180px;margin:0 auto 18px;text-align:center}
+.home-hero-title{font-family:'Source Serif 4',Georgia,serif;font-size:clamp(30px,4vw,48px);font-weight:700;letter-spacing:-.035em;color:var(--navy);margin:12px 0 18px}
+.home-hero-image{max-width:1180px;margin:0 auto 24px}
+.home-hero-image img{width:100%;height:clamp(280px,42vw,470px);object-fit:cover;object-position:center 46%;border-radius:20px;border:1px solid var(--line);box-shadow:var(--shadow)}
+.module-banner{display:grid;grid-template-columns:1.3fr 1fr;gap:20px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px;margin:0 0 18px;box-shadow:var(--shadow)}
+.module-banner img{width:100%;height:150px;object-fit:cover;object-position:center;border-radius:12px}
+.module-banner h1{font-family:'Source Serif 4',Georgia,serif;font-size:28px;color:var(--navy);margin:0}
+.sdg-attribution{font-size:10px;color:#718096;line-height:1.35;margin-top:4px}
 div[data-testid="stImage"] img{display:block;width:100%;object-fit:cover;border-radius:13px;border:1px solid var(--line)}
-.home-hero-image img{height:210px}
 .chat-hero-image img{height:112px}
 .chat-surface{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px;min-height:400px;box-shadow:0 1px 3px rgba(20,33,61,.04)}
 [data-testid="stVerticalBlockBorderWrapper"]{border:1px solid var(--line)!important;border-radius:16px!important;background:#fff;box-shadow:var(--shadow)}
@@ -156,8 +168,8 @@ div[data-testid="stImage"] img{display:block;width:100%;object-fit:cover;border-
 .chat-scroll-note{font-size:11px;color:#8190a3;margin:-4px 0 8px 2px}
 footer{visibility:hidden}
 @media(max-width:1100px){.block-container{padding-left:.7rem;padding-right:.7rem}.chat-heading{align-items:flex-start;flex-direction:column}.chat-status{width:100%}}
-@media(max-width:1000px){.block-container{padding-left:1rem;padding-right:1rem}div[data-testid="stHorizontalBlock"]{flex-wrap:wrap!important}div[data-testid="stHorizontalBlock"]>div[data-testid="column"]{min-width:min(100%,620px)!important;width:100%!important;flex:1 1 100%!important}}
-@media(max-width:760px){[data-testid="stSidebar"]{width:min(84vw,280px)!important;min-width:min(84vw,280px)!important;max-width:min(84vw,280px)!important}.brand-name{font-size:21px}.block-container{padding:.5rem .55rem 1rem}.chat-surface{padding:10px;min-height:0}.panel{padding:14px}.chat-heading h1{font-size:22px}.home-hero{grid-template-columns:1fr}.home-hero-image img{height:170px}}
+@media(max-width:1000px){.block-container{padding-left:1rem;padding-right:1rem}div[data-testid="stHorizontalBlock"]{flex-wrap:wrap!important}div[data-testid="stHorizontalBlock"]>div[data-testid="column"]{min-width:min(100%,620px)!important;width:100%!important;flex:1 1 100%!important}.module-banner{grid-template-columns:1fr}.module-banner img{height:190px}}
+@media(max-width:760px){[data-testid="stSidebar"]{width:min(84vw,280px)!important;min-width:min(84vw,280px)!important;max-width:min(84vw,280px)!important}.brand-name{font-size:21px}.block-container{padding:.5rem .55rem 1rem}.chat-surface{padding:10px;min-height:0}.panel{padding:14px}.chat-heading h1{font-size:22px}.home-hero-image img{height:240px}}
 @media(max-height:820px){.block-container{padding-top:.8rem}}
 button:focus,input:focus,textarea:focus,select:focus{outline:2px solid var(--red)!important;outline-offset:2px}
 </style>
@@ -223,8 +235,9 @@ def extract_act_number(document: dict[str, Any], chunks: list[dict[str, Any]]) -
 def header(lang: str) -> None:
     h1, h2, h3 = st.columns([2.1, 5.0, 1.1], vertical_alignment="center")
     with h1:
+        logo_uri = "data:image/svg+xml;base64," + base64.b64encode(LOGO_IMAGE.read_bytes()).decode("ascii") if LOGO_IMAGE.exists() else ""
         st.markdown(
-            '<div class="brand"><div class="brand-mark">N</div><div><div class="brand-name">Nyaya <span>Mitra</span></div>'
+            f'<div class="brand"><img class="brand-mark" src="{logo_uri}" alt="Nyaya Mitra logo"><div><div class="brand-name">Nyaya <span>Mitra</span></div>'
             f'<div class="brand-sub">{t(lang, "brand_sub")}</div></div></div>',
             unsafe_allow_html=True,
         )
@@ -252,7 +265,7 @@ def header(lang: str) -> None:
         )
 
 
-def sidebar_nav(lang: str, db: Database) -> None:
+def sidebar_nav(lang: str) -> None:
     with st.sidebar:
         st.markdown(f'<div class="nav-note">{t(lang, "nav_label")}</div>', unsafe_allow_html=True)
         items = [
@@ -268,32 +281,14 @@ def sidebar_nav(lang: str, db: Database) -> None:
             if st.button(label, key=f"nav_{key}", use_container_width=True, type="primary" if active else "secondary"):
                 st.session_state.page = key
                 st.rerun()
-        st.markdown("---")
-        counts = db.counts()
-        st.caption(f"{t(lang, 'metric_docs')}: {counts['documents']} · {t(lang, 'metric_chunks')}: {counts['chunks']}")
-        st.caption(t(lang, "shared_history_note"))
-        st.markdown("---")
         if st.session_state.is_admin:
+            st.markdown("---")
             st.success(f"{t(lang, 'signed_in_as')} {config.ADMIN_USERNAME}")
             if st.button(t(lang, "sign_out"), use_container_width=True):
                 st.session_state.is_admin = False
                 if st.session_state.page in {"admin", "upload"}:
                     st.session_state.page = "home"
                 st.rerun()
-        else:
-            st.markdown(f"**{t(lang, 'admin_signin')}**")
-            if db.admin_count() == 0:
-                st.caption(t(lang, "admin_not_configured"))
-            else:
-                with st.form("admin_login"):
-                    user = st.text_input(t(lang, "username"))
-                    pw = st.text_input(t(lang, "password"), type="password")
-                    if st.form_submit_button(t(lang, "sign_in"), use_container_width=True):
-                        if authenticate(db, user, pw):
-                            st.session_state.is_admin = True
-                            st.rerun()
-                        else:
-                            st.error(t(lang, "invalid_credentials"))
 
 
 def require_admin(lang: str) -> bool:
@@ -304,16 +299,10 @@ def require_admin(lang: str) -> bool:
 
 
 def page_home(lang: str, db: Database, searcher: LegalSearch) -> None:
-    hero_copy, hero_image = st.columns([1.2, .8], gap="large", vertical_alignment="center")
-    with hero_copy:
-        st.markdown(
-            f'<div class="panel hero"><div class="kicker">Legal information · Citizen guidance</div>'
-            f'<h1>{t(lang, "welcome_title")}</h1><p>{t(lang, "welcome_body")}</p></div>',
-            unsafe_allow_html=True,
-        )
-    with hero_image:
-        if LEGAL_HERO_IMAGE.exists():
-            st.image(str(LEGAL_HERO_IMAGE), use_container_width=True, caption="Courthouse exterior")
+    st.markdown(f'<div class="home-hero"><div class="kicker">Indian legal information</div><h1 class="home-hero-title">{t(lang, "welcome_title")}</h1></div>', unsafe_allow_html=True)
+    if LEGAL_HERO_IMAGE.exists():
+        hero_uri = "data:image/jpeg;base64," + base64.b64encode(LEGAL_HERO_IMAGE.read_bytes()).decode("ascii")
+        st.markdown(f'<div class="home-hero-image"><img src="{hero_uri}" alt="Allahabad High Court building" /></div>', unsafe_allow_html=True)
     docs = [d for d in db.list_documents(active_only=True) if str(d.get("original_filename") or "").lower().endswith(".pdf")]
     docs.sort(key=lambda d: (act_year(d.get("act_name", "")) or 0, d.get("upload_date", "")), reverse=True)
     st.subheader(t(lang, "home_updates_title"))
@@ -344,7 +333,6 @@ def page_home(lang: str, db: Database, searcher: LegalSearch) -> None:
                         st.session_state.act_search_input = str(doc.get("act_name") or "")
                         st.session_state.page = "laws"
                         st.rerun()
-    st.markdown(f'<div class="disclaimer">{t(lang, "library_updates_only")}</div>', unsafe_allow_html=True)
 
 
 def localized_verification_status(lang: str, status: str) -> str:
@@ -392,22 +380,10 @@ def page_chat(lang: str, db: Database, rag: NyayMitraRAG) -> None:
         msg["content"] = rag.compose_answer(prior_user, sources, lang)[0] if sources else t(lang, "insufficient")
         msg["language"] = lang
 
-    if config.PUBLIC_MODE:
-        st.caption(t(lang, "public_data_notice"))
-
     center, right = st.columns([7.1, 2.9], gap="medium")
     with center:
-        title_col, image_col = st.columns([3.5, 1.2], gap="medium", vertical_alignment="center")
-        with title_col:
-            st.markdown(
-                f'<div class="chat-heading"><div><div class="topbar-copy">Nyaya Mitra · Legal information</div>'
-                f'<h1>{t(lang, "chat_title")}</h1><p>{t(lang, "chat_subtitle")}</p></div>'
-                f'<div class="chat-status">{t(lang, "powered")}</div></div>',
-                unsafe_allow_html=True,
-            )
-        with image_col:
-            if LEGAL_HERO_IMAGE.exists():
-                st.image(str(LEGAL_HERO_IMAGE), use_container_width=True)
+        chat_uri = "data:image/jpeg;base64," + base64.b64encode(CHAT_IMAGE.read_bytes()).decode("ascii") if CHAT_IMAGE.exists() else ""
+        st.markdown(f'<div class="module-banner"><h1>{t(lang, "chat_title")}</h1><img src="{chat_uri}" alt="Historic law books" /></div>' if chat_uri else f'<div class="module-banner"><h1>{t(lang, "chat_title")}</h1></div>', unsafe_allow_html=True)
         with st.container(border=True):
             if not st.session_state.messages:
                 st.markdown(
@@ -462,7 +438,6 @@ def page_chat(lang: str, db: Database, rag: NyayMitraRAG) -> None:
             if cols[2].button(t(lang, "cancel")):
                 st.session_state.confirm_clear = False
                 st.rerun()
-        st.markdown(f'<div class="disclaimer">{t(lang, "disclaimer")}<br>{t(lang, "disclaimer_full")}</div>', unsafe_allow_html=True)
     with right:
         with st.container():
             st.markdown(f'<div class="rail-title">{t(lang, "suggested")}</div>', unsafe_allow_html=True)
@@ -512,15 +487,11 @@ def page_chat(lang: str, db: Database, rag: NyayMitraRAG) -> None:
                 st.session_state.messages = []
                 st.session_state.chat_session_id = str(uuid.uuid4())
                 st.rerun()
-            if not config.PUBLIC_MODE:
-                st.caption(t(lang, "shared_history_note"))
 
 
 def page_laws(lang: str, searcher: LegalSearch) -> None:
-    st.markdown(
-        f'<div class="panel hero"><h1>{t(lang, "laws_title")}</h1><p>{t(lang, "laws_intro")}</p></div>',
-        unsafe_allow_html=True,
-    )
+    laws_uri = "data:image/jpeg;base64," + base64.b64encode(LAWS_IMAGE.read_bytes()).decode("ascii") if LAWS_IMAGE.exists() else ""
+    st.markdown(f'<div class="module-banner"><h1>{t(lang, "laws_title")}</h1><img src="{laws_uri}" alt="Bengaluru High Court" /></div>' if laws_uri else f'<div class="module-banner"><h1>{t(lang, "laws_title")}</h1></div>', unsafe_allow_html=True)
     pending = (st.session_state.get("laws_query") or "").strip()
     if pending:
         st.session_state["act_search_input"] = pending
@@ -598,10 +569,10 @@ def page_laws(lang: str, searcher: LegalSearch) -> None:
 
 
 def page_quiz(lang: str, quiz: QuizService) -> None:
-    st.markdown(
-        f'<div class="panel hero"><h1>{t(lang, "quiz_title")}</h1><p>{t(lang, "quiz_intro")}</p></div>',
-        unsafe_allow_html=True,
-    )
+    sdg_uri = "data:image/jpeg;base64," + base64.b64encode(SDG_16_IMAGE.read_bytes()).decode("ascii") if SDG_16_IMAGE.exists() else ""
+    st.markdown(f'<div class="module-banner"><h1>{t(lang, "quiz_title")}</h1><img src="{sdg_uri}" alt="United Nations Sustainable Development Goal 16: Peace, Justice and Strong Institutions" /></div>', unsafe_allow_html=True)
+    if sdg_uri:
+        st.markdown('<div class="sdg-attribution"><a href="https://www.un.org/sustainabledevelopment/" target="_blank">United Nations Sustainable Development Goals</a>. The content of this publication has not been approved by the United Nations and does not reflect the views of the United Nations or its officials or Member States.</div>', unsafe_allow_html=True)
     docs = quiz.law_documents()
     if not docs:
         st.info(t(lang, "no_documents"))
@@ -619,7 +590,6 @@ def page_quiz(lang: str, quiz: QuizService) -> None:
     total_rounds = (total_questions + 9) // 10
     done_by_doc = st.session_state.quiz_completed_rounds
     completed = done_by_doc.get(selected_id, [])
-    st.caption(t(lang, "quiz_source_note"))
     st.caption(t(lang, "quiz_questions_in_act").format(count=total_questions))
     if not total_questions:
         st.info(t(lang, "quiz_no_act_questions"))
@@ -863,7 +833,7 @@ def main() -> None:
     quiz = QuizService(db)
     header(LANGS[st.session_state.language])
     lang = LANGS[st.session_state.language]
-    sidebar_nav(lang, db)
+    sidebar_nav(lang)
     page = st.session_state.page
     if page == "home":
         page_home(lang, db, searcher)
