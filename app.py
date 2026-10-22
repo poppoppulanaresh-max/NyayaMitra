@@ -13,7 +13,7 @@ from urllib.parse import quote_plus
 import streamlit as st
 
 import config
-from auth import authenticate, bootstrap_admin, hash_password
+from auth import authenticate, bootstrap_admin, hash_password, verify_password
 from config import DB_PATH, KB_SEED_PATH, QUIZ_SEED_PATH, openai_configured
 from database import Database
 from document_processor import DocumentProcessingError, DocumentProcessor, sha256_bytes
@@ -25,7 +25,6 @@ from translations import LANGS, suggested_questions, suggested_question_prompts,
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("nyaya.app")
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
-CENTRAL_ACTS_CATALOG_PATH = config.DATA_DIR / "central_acts_catalog.json"
 LEGAL_HERO_IMAGE = ASSETS_DIR / "courthouse-hero.jpg"
 LAWS_IMAGE = ASSETS_DIR / "bengaluru-high-court.jpg"
 CHAT_IMAGE = ASSETS_DIR / "legal-books.jpg"
@@ -49,7 +48,7 @@ def load_json(path: Path) -> list:
     return []
 
 
-def seed_bundled_pdfs(db: Database) -> None:
+def seed_bundled_pdfs(db: Database, uploads_dir: Path) -> None:
     """Index PDFs shipped in uploads/ once, copying them into persistent storage."""
     known_acts = (
         ("1709101314", "The Protection of Children from Sexual Offences Act, 2012"),
@@ -58,9 +57,18 @@ def seed_bundled_pdfs(db: Database) -> None:
         ("cp act 2019", "The Consumer Protection Act, 2019"),
         ("it_act_2000", "The Information Technology Act, 2000"),
     )
-    processor = DocumentProcessor(db, config.UPLOADS_DIR)
+    processor = DocumentProcessor(db, uploads_dir)
     bundled_uploads = Path(__file__).resolve().parent / "uploads"
+    bundled_filenames = {
+        "0ae7f82ab5b7_CP_Act_2019_1732700731.pdf",
+        "0b305c1ed9b5_1709101314.pdf",
+        "e6688c668ee1_1710219616.pdf",
+        "e71725fa32e8_it_act_2000_updated.pdf",
+        "ff92dcc72778_a202345.pdf",
+    }
     for pdf_path in sorted(bundled_uploads.glob("*.pdf")):
+        if pdf_path.name not in bundled_filenames:
+            continue
         try:
             data = pdf_path.read_bytes()
             if db.find_document_by_hash(sha256_bytes(data)):
@@ -74,23 +82,46 @@ def seed_bundled_pdfs(db: Database) -> None:
 
 
 @st.cache_resource
-def get_db() -> Database:
+def get_auth_db() -> Database:
     db = Database(DB_PATH)
-    db.seed_knowledge(load_json(KB_SEED_PATH))
-    db.seed_quiz(load_json(QUIZ_SEED_PATH))
     bootstrap_admin(db)
-    seed_bundled_pdfs(db)
     return db
 
 
 @st.cache_resource
-def get_rag(_db: Database) -> NyayMitraRAG:
+def get_profile_db(profile_id: str) -> Database:
+    profile_dir = config.DATA_DIR / "profiles" / profile_id
+    uploads_dir = profile_dir / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    db = Database(profile_dir / "nyaya_mitra.db")
+    db.seed_knowledge(load_json(KB_SEED_PATH))
+    db.seed_quiz(load_json(QUIZ_SEED_PATH))
+    seed_bundled_pdfs(db, uploads_dir)
+    return db
+
+
+def get_db() -> Database:
+    profile_id = st.session_state.get("user_id") or st.session_state.get("guest_profile_id")
+    if not profile_id:
+        profile_id = "guest-" + str(uuid.uuid4())
+        st.session_state.guest_profile_id = profile_id
+    return get_profile_db(str(profile_id))
+
+
+def profile_upload_dir(db: Database) -> Path:
+    uploads_dir = db.db_path.parent / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    return uploads_dir
+
+
+@st.cache_resource
+def get_rag(profile_id: str, _db: Database) -> NyayMitraRAG:
     return NyayMitraRAG(_db)
 
 
 def refresh_rag(db: Database) -> NyayMitraRAG:
     get_rag.clear()
-    return get_rag(db)
+    return get_rag(db.db_path.parent.name, db)
 
 
 def inject_css() -> None:
@@ -169,11 +200,6 @@ div[data-testid="stImage"] img{display:block;width:100%;object-fit:cover;border-
 .law-news-card{background:#fff;border:1px solid var(--line);border-radius:15px;padding:18px;min-height:135px;box-shadow:var(--shadow)}
 .law-news-card h3{font-size:17px;line-height:1.4;margin:4px 0 8px;color:var(--navy)}
 .law-news-card p{font-size:13px;color:var(--muted);margin:0}
-.acts-directory{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:14px 0 22px}
-.act-directory-card{display:block;min-height:126px;padding:16px 18px;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 2px 8px rgba(22,38,58,.04);text-decoration:none!important;color:var(--navy)!important;transition:transform .15s ease,border-color .15s ease,box-shadow .15s ease}
-.act-directory-card:hover{transform:translateY(-2px);border-color:#d99aa5;box-shadow:var(--shadow)}
-.act-directory-card h3{margin:5px 0 12px;font-size:15px;line-height:1.45;color:var(--navy)}
-.act-directory-meta{display:flex;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:12px}
 .act-directory-meta span{padding:3px 8px;background:#f4f6f8;border:1px solid var(--line);border-radius:999px}
 .law-year-heading{font-size:20px;font-weight:750;color:var(--navy);margin:20px 0 10px;padding-bottom:8px;border-bottom:1px solid var(--line)}
 .rail-card div[data-testid="stButton"]>button{min-height:52px;text-align:left;white-space:normal;line-height:1.3;background:#fffafa}
@@ -182,7 +208,7 @@ div[data-testid="stImage"] img{display:block;width:100%;object-fit:cover;border-
 footer{visibility:hidden}
 @media(max-width:1100px){.block-container{padding-left:.7rem;padding-right:.7rem}.chat-heading{align-items:flex-start;flex-direction:column}.chat-status{width:100%}}
 @media(max-width:1000px){.block-container{padding-left:1rem;padding-right:1rem}div[data-testid="stHorizontalBlock"]{flex-wrap:wrap!important}div[data-testid="stHorizontalBlock"]>div[data-testid="column"]{min-width:min(100%,620px)!important;width:100%!important;flex:1 1 100%!important}.module-banner{grid-template-columns:1fr}.module-banner img{height:190px}}
-@media(max-width:760px){[data-testid="stSidebar"]{width:min(84vw,280px)!important;min-width:min(84vw,280px)!important;max-width:min(84vw,280px)!important}.brand-name{font-size:21px}.block-container{padding:.5rem .55rem 1rem}.chat-surface{padding:10px;min-height:0}.panel{padding:14px}.chat-heading h1{font-size:22px}.home-hero-image img{height:240px}.acts-directory{grid-template-columns:1fr}}
+@media(max-width:760px){[data-testid="stSidebar"]{width:min(84vw,280px)!important;min-width:min(84vw,280px)!important;max-width:min(84vw,280px)!important}.brand-name{font-size:21px}.block-container{padding:.5rem .55rem 1rem}.chat-surface{padding:10px;min-height:0}.panel{padding:14px}.chat-heading h1{font-size:22px}.home-hero-image img{height:240px}}
 @media(max-height:820px){.block-container{padding-top:.8rem}}
 button:focus,input:focus,textarea:focus,select:focus{outline:2px solid var(--red)!important;outline-offset:2px}
 </style>
@@ -198,6 +224,9 @@ def init_state() -> None:
         "messages": [],
         "pending_question": "",
         "is_admin": False,
+        "user_id": "",
+        "username": "",
+        "guest_profile_id": "guest-" + str(uuid.uuid4()),
         "chat_session_id": str(uuid.uuid4()),
         "confirm_clear": False,
         "delete_chat_id": "",
@@ -236,6 +265,27 @@ def act_year(act_name: str) -> int | None:
     return int(match.group(0)) if match else None
 
 
+def display_act_title(value: Any) -> str:
+    """Clean filename-style titles for display while preserving common legal acronyms."""
+    original = str(value or "").strip()
+    raw = re.sub(r"\s+", " ", original.replace("_", " "))
+    if "_" not in original:
+        return raw
+    small_words = {"a", "an", "and", "as", "at", "by", "for", "in", "of", "on", "or", "the", "to"}
+    acronyms = {"BNS": "BNS", "CIN": "CIN", "CPC": "CPC", "CRPC": "CrPC", "FIR": "FIR", "GST": "GST", "IPC": "IPC", "IT": "IT", "KYC": "KYC", "NCRB": "NCRB", "NDPS": "NDPS", "NIA": "NIA", "POCSO": "POCSO", "RBI": "RBI", "RTI": "RTI", "SC": "SC", "SEBI": "SEBI", "ST": "ST", "UIDAI": "UIDAI"}
+
+    def title_word(match: re.Match[str]) -> str:
+        word = match.group(0)
+        upper = word.upper()
+        if upper in acronyms:
+            return acronyms[upper]
+        if match.start() > 0 and word.lower() in small_words:
+            return word.lower()
+        return word[:1].upper() + word[1:].lower()
+
+    return re.sub(r"[A-Za-z]+", title_word, raw)
+
+
 def extract_act_number(document: dict[str, Any], chunks: list[dict[str, Any]]) -> str:
     first_pages = "\n".join(
         str(row.get("text") or "") for row in chunks
@@ -251,8 +301,10 @@ def header(lang: str) -> None:
     with h1:
         with st.container(border=True):
             logo_col, name_col = st.columns([.34, 1.66], vertical_alignment="center")
-            if LOGO_IMAGE.exists():
-                logo_col.image(str(LOGO_IMAGE), width=44)
+            logo_col.markdown(
+                '<svg viewBox="0 0 64 64" width="44" height="44" role="img" aria-label="Nyaya Mitra logo" xmlns="http://www.w3.org/2000/svg"><circle cx="32" cy="32" r="29" fill="#fff8f0" stroke="#b51f35" stroke-width="2.5"/><path d="M32 12v36M22 50h20M25 18h14M15 23h34M32 18l-15 5m15-5 15 5M17 24l-7 14h14zm30 0-7 14h14zM25 45h14" fill="none" stroke="#14243a" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 38h14m16 0h14" stroke="#b51f35" stroke-width="2"/></svg>',
+                unsafe_allow_html=True,
+            )
             name_col.markdown(
                 f'<div class="brand-name">Nyaya <span>Mitra</span></div><div class="brand-sub">{t(lang, "brand_sub")}</div>',
                 unsafe_allow_html=True,
@@ -292,18 +344,31 @@ def sidebar_nav(lang: str) -> None:
             ("quiz", t(lang, "quiz")),
             ("admin_portal", t(lang, "admin_portal")),
         ]
+        if st.session_state.user_id:
+            items.append(("upload", t(lang, "upload")))
         if st.session_state.is_admin:
-            items.extend([("admin", t(lang, "admin")), ("upload", t(lang, "upload"))])
+            items.append(("admin", t(lang, "admin")))
         for key, label in items:
             active = st.session_state.page == key
             if st.button(label, key=f"nav_{key}", use_container_width=True, type="primary" if active else "secondary"):
                 st.session_state.page = key
                 st.rerun()
-        if st.session_state.is_admin:
+        if st.session_state.user_id:
             st.markdown("---")
-            st.success(f"{t(lang, 'signed_in_as')} {config.ADMIN_USERNAME}")
+            st.success(f"{t(lang, 'signed_in_as')} {st.session_state.username}")
             if st.button(t(lang, "sign_out"), use_container_width=True):
                 st.session_state.is_admin = False
+                st.session_state.user_id = ""
+                st.session_state.username = ""
+                st.session_state.messages = []
+                st.session_state.pending_question = ""
+                st.session_state.quiz_answers = {}
+                st.session_state.quiz_details = []
+                st.session_state.quiz_round_questions = []
+                st.session_state.quiz_completed_rounds = {}
+                st.session_state.quiz_active = False
+                st.session_state.quiz_finished = False
+                st.session_state.quiz_score = 0
                 if st.session_state.page in {"admin", "upload", "admin_portal"}:
                     st.session_state.page = "home"
                 st.rerun()
@@ -316,104 +381,135 @@ def require_admin(lang: str) -> bool:
     return False
 
 
+def require_account(lang: str) -> bool:
+    if st.session_state.get("user_id"):
+        return True
+    st.warning(t(lang, "auth_required"))
+    if st.button(t(lang, "admin_portal"), key="upload_sign_in_link"):
+        st.session_state.page = "admin_portal"
+        st.rerun()
+    return False
+
+
+def establish_account_session(user_id: str, username: str, is_admin: bool) -> None:
+    """Bind the browser session to one profile and discard any guest UI state."""
+    st.session_state.user_id = user_id
+    st.session_state.username = username
+    st.session_state.is_admin = is_admin
+    st.session_state.messages = []
+    st.session_state.pending_question = ""
+    st.session_state.chat_session_id = str(uuid.uuid4())
+    st.session_state.quiz_answers = {}
+    st.session_state.quiz_index = 0
+    st.session_state.quiz_submitted_current = False
+    st.session_state.quiz_act_id = ""
+    st.session_state.quiz_round_index = 0
+    st.session_state.quiz_details = []
+    st.session_state.quiz_round_questions = []
+    st.session_state.quiz_completed_rounds = {}
+    st.session_state.quiz_active = False
+    st.session_state.quiz_finished = False
+    st.session_state.quiz_score = 0
+    st.session_state.page = "admin" if is_admin else "home"
+
+
 def page_home(lang: str, db: Database, searcher: LegalSearch) -> None:
     st.markdown(f'<div class="home-hero"><div class="kicker">Indian legal information</div><h1 class="home-hero-title">{t(lang, "welcome_title")}</h1></div>', unsafe_allow_html=True)
     if LEGAL_HERO_IMAGE.exists():
         hero_uri = "data:image/jpeg;base64," + base64.b64encode(LEGAL_HERO_IMAGE.read_bytes()).decode("ascii")
         st.markdown(f'<div class="home-hero-image"><img src="{hero_uri}" alt="Allahabad High Court building" /></div>', unsafe_allow_html=True)
-    docs = [d for d in db.list_documents(active_only=True) if str(d.get("original_filename") or "").lower().endswith(".pdf") and d.get("indexing_status") == "indexed"]
-    docs.sort(key=lambda d: d.get("upload_date", ""), reverse=True)
     st.subheader(t(lang, "updated_pdfs"))
     st.caption(t(lang, "home_updates_note"))
     india_link, gazette_link = st.columns(2)
     india_link.link_button(t(lang, "india_code_link"), "https://www.indiacode.nic.in/indiacode/home.jsp", use_container_width=True)
     gazette_link.link_button(t(lang, "gazette_link"), "https://egazette.gov.in/", use_container_width=True)
+    render_pdf_law_library(lang, db, "home")
+
+
+def render_pdf_law_library(lang: str, db: Database, key_prefix: str, query: str = "", mode: str = "name") -> None:
+    """Show actual indexed Act PDFs, downloadable files, and extracted Act text."""
+    docs = [
+        doc for doc in db.list_documents(active_only=True)
+        if str(doc.get("original_filename") or "").lower().endswith(".pdf")
+        and doc.get("indexing_status") == "indexed"
+    ]
+    chunks_by_doc: dict[str, list[dict[str, Any]]] = {str(doc["id"]): [] for doc in docs}
+    for chunk in db.active_chunks():
+        if str(chunk.get("document_id")) in chunks_by_doc:
+            chunks_by_doc[str(chunk["document_id"])].append(chunk)
+    for doc in docs:
+        doc["act_number"] = extract_act_number(doc, chunks_by_doc.get(str(doc["id"]), []))
+        doc["year"] = act_year(doc.get("act_name", ""))
+
+    st.caption(f"{len(docs)} · {t(lang, 'indexed_pdf_count')}")
     if not docs:
         st.info(t(lang, "no_documents"))
-    else:
-        for start in range(0, len(docs), 2):
-            cols = st.columns(2, gap="medium")
-            for col, doc in zip(cols, docs[start:start + 2]):
-                year = act_year(doc.get("act_name", ""))
-                version = (doc.get("version_or_date") or "").strip()
-                safe_act_name = escape(str(doc.get("act_name") or ""))
-                safe_version = escape(version or t(lang, "uploaded_pdf"))
-                with col:
-                    st.markdown(
-                        f'<div class="law-news-card"><div class="kicker">{t(lang, "law_year")} {year or "—"}</div>'
-                        f'<h3>{safe_act_name}</h3><p>{safe_version}</p></div>',
-                        unsafe_allow_html=True,
-                    )
-                    if st.button(t(lang, "browse_act"), key=f"home_law_{doc['id']}", use_container_width=True):
-                        st.session_state.laws_query = str(doc.get("act_name") or "")
-                        st.session_state.laws_search_mode = "name"
-                        st.session_state.laws_search_mode_widget = "name"
-                        st.session_state.act_search_input = str(doc.get("act_name") or "")
-                        st.session_state.page = "laws"
-                        st.rerun()
-                    stored_pdf = config.UPLOADS_DIR / str(doc.get("stored_filename") or "")
-                    if stored_pdf.is_file():
-                        col.download_button(
-                            "Download PDF",
-                            data=stored_pdf.read_bytes(),
-                            file_name=str(doc.get("original_filename") or "legal_document.pdf"),
-                            mime="application/pdf",
-                            key=f"home_download_pdf_{doc['id']}",
-                            use_container_width=True,
-                        )
-    render_central_acts_directory(lang, "home")
+        return
+    search = st.text_input(
+        t(lang, "act_search"),
+        value=query,
+        placeholder=t(lang, "act_search_placeholder"),
+        key=f"{key_prefix}_indexed_pdf_search",
+    ).strip().casefold()
+    if search:
+        if mode == "number":
+            needle = search.replace("act no.", "").replace("no.", "").strip()
+            docs = [doc for doc in docs if needle in str(doc.get("act_number") or "").casefold()]
+        else:
+            docs = [doc for doc in docs if search in str(doc.get("act_name") or "").replace("_", " ").casefold()]
+    if not docs:
+        st.info(t(lang, "no_match"))
+        return
 
-
-def render_central_acts_directory(lang: str, key_prefix: str) -> None:
-    catalog_data = load_json(CENTRAL_ACTS_CATALOG_PATH)
-    catalog_entries = catalog_data.get("entries", []) if isinstance(catalog_data, dict) else []
-    st.subheader(t(lang, "central_catalog_title"))
-    st.caption(t(lang, "central_catalog_note"))
-    catalog_search = st.text_input(
-        t(lang, "central_catalog_filter"),
-        key=f"{key_prefix}_central_catalog_search",
-    )
-    search = catalog_search.strip().casefold()
-    year_options = sorted({int(row["year"]) for row in catalog_entries if str(row.get("year", "")).isdigit()}, reverse=True)
-    selected_year = st.selectbox(
-        t(lang, "central_catalog_year"),
-        [None, *year_options],
-        format_func=lambda year: t(lang, "central_catalog_year_all") if year is None else str(year),
-        key=f"{key_prefix}_central_catalog_year",
-    )
-    filtered = [
-        row for row in catalog_entries
-        if (not search or any(search in str(row.get(field, "")).casefold() for field in ("act_name", "act_number", "year")))
-        and (selected_year is None or int(row.get("year", 0)) == selected_year)
-    ]
-    source_published = catalog_data.get("source_published", "unknown") if isinstance(catalog_data, dict) else "unknown"
-    st.caption(f"{len(filtered):,} / {len(catalog_entries):,} {t(lang, 'central_catalog_results')} · Source list: {source_published}")
-    if filtered:
-        act_cards = ['<div class="acts-directory">']
-        for row in filtered:
-            act_name = escape(str(row.get("act_name", "")))
-            year = escape(str(row.get("year", "—")))
-            act_number = escape(str(row.get("act_number", "—")))
-            entry = escape(str(row.get("serial", "")))
-            act_url = "https://www.indiacode.nic.in/handle/123456789/1359/simple-search?query=" + quote_plus(str(row.get("act_name", "")))
-            act_cards.append(
-                f'<a class="act-directory-card" href="{escape(act_url, quote=True)}" target="_blank" rel="noopener noreferrer">'
-                f'<div class="kicker">{t(lang, "central_catalog_serial")} {entry}</div><h3>{act_name}</h3>'
-                f'<div class="act-directory-meta"><span>{t(lang, "central_catalog_year_label")}: {year}</span>'
-                f'<span>{t(lang, "central_catalog_number")}: {act_number}</span></div></a>'
+    for doc in sorted(docs, key=lambda row: (row.get("year") or 0, row.get("act_name") or ""), reverse=True):
+        chunks = chunks_by_doc.get(str(doc["id"]), [])
+        raw_title = str(doc.get("act_name") or doc.get("original_filename") or t(lang, "uploaded_pdf"))
+        title = display_act_title(raw_title)
+        label = f"{title} · Act {doc['act_number']} ({doc['year']})" if doc.get("act_number") else title
+        with st.container(border=True):
+            st.markdown(f"#### {escape(label)}")
+            st.caption(
+                f"{doc.get('page_count') or 0} {t(lang, 'page')} · "
+                f"{len(chunks)} {t(lang, 'indexed_passages')} · "
+                f"{t(lang, 'verification')}: {localized_verification_status(lang, str(doc.get('verification_status') or 'unverified'))}"
             )
-        act_cards.append("</div>")
-        st.markdown("".join(act_cards), unsafe_allow_html=True)
-    source_pdf_path = Path(__file__).resolve().parent / "data" / "central_acts_alphabetical_2025.pdf"
-    if source_pdf_path.is_file():
-        st.download_button(
-            t(lang, "central_catalog_original_pdf"),
-            data=source_pdf_path.read_bytes(),
-            file_name=source_pdf_path.name,
-            mime="application/pdf",
-            key=f"{key_prefix}_central_acts_source_pdf",
-        )
-    st.caption(f"{t(lang, 'central_catalog_publisher')}: {catalog_data.get('publisher', 'Legislative Department, Government of India') if isinstance(catalog_data, dict) else 'Legislative Department, Government of India'}")
+            if doc.get("version_or_date"):
+                st.caption(str(doc["version_or_date"]))
+            first_chunks = chunks[:2]
+            if first_chunks:
+                st.caption(t(lang, "act_text_preview"))
+                for chunk in first_chunks:
+                    if chunk.get("section_number") and chunk.get("section_number") != "unknown":
+                        st.markdown(f"**{t(lang, 'section')} {escape(str(chunk['section_number']))}**")
+                    st.write(chunk.get("text") or "")
+            read_col, download_col = st.columns(2)
+            stored_pdf = profile_upload_dir(db) / str(doc.get("stored_filename") or "")
+            if stored_pdf.is_file():
+                download_col.download_button(
+                    t(lang, "download_pdf"),
+                    data=stored_pdf.read_bytes(),
+                    file_name=str(doc.get("original_filename") or "legal_document.pdf"),
+                    mime="application/pdf",
+                    key=f"{key_prefix}_download_act_{doc['id']}",
+                    use_container_width=True,
+                )
+            official_url = str(doc.get("source_url") or "").strip()
+            if not official_url:
+                official_url = "https://www.indiacode.nic.in/handle/123456789/1359/simple-search?query=" + quote_plus(title)
+            read_col.link_button(t(lang, "open_official_act"), official_url, use_container_width=True)
+            if chunks:
+                with st.expander(t(lang, "read_full_act_text"), expanded=False):
+                    for chunk in chunks:
+                        section = chunk.get("section_number")
+                        page = chunk.get("page_number")
+                        heading = []
+                        if section and section != "unknown":
+                            heading.append(f"{t(lang, 'section')} {section}")
+                        if page:
+                            heading.append(f"{t(lang, 'page')} {page}")
+                        if heading:
+                            st.caption(" · ".join(heading))
+                        st.write(chunk.get("text") or "")
 
 
 def localized_verification_status(lang: str, status: str) -> str:
@@ -600,58 +696,8 @@ def page_laws(lang: str, searcher: LegalSearch) -> None:
     india_link.link_button(t(lang, "india_code_search"), india_code_url, use_container_width=True)
     gazette_link.link_button(t(lang, "gazette_link"), "https://egazette.gov.in/", use_container_width=True)
 
-    render_central_acts_directory(lang, "laws")
-    portal_col, states_col = st.columns(2)
-    portal_col.link_button(t(lang, "india_code_portal"), "https://www.indiacode.nic.in/", use_container_width=True)
-    states_col.link_button(t(lang, "state_acts_portal"), "https://www.indiacode.nic.in/", use_container_width=True)
-
-    docs = [d for d in searcher.db.list_documents(active_only=True) if str(d.get("original_filename") or "").lower().endswith(".pdf") and d.get("indexing_status") == "indexed"]
-    chunks_by_doc: dict[str, list[dict[str, Any]]] = {str(d["id"]): [] for d in docs}
-    for chunk in searcher.db.active_chunks():
-        if str(chunk.get("document_id")) in chunks_by_doc:
-            chunks_by_doc[str(chunk["document_id"])].append(chunk)
-    for doc in docs:
-        doc["act_number"] = extract_act_number(doc, chunks_by_doc.get(str(doc["id"]), []))
-        doc["year"] = act_year(doc.get("act_name", ""))
-
-    def matches(doc: dict[str, Any]) -> bool:
-        if not query.strip():
-            return False
-        if chosen_mode == "name":
-            return query.casefold() in str(doc.get("act_name") or "").casefold()
-        return query.casefold().replace("act no.", "").replace("no.", "").strip() in str(doc.get("act_number") or "").casefold()
-
-    matches_found = [doc for doc in docs if matches(doc)]
-    if query.strip():
-        st.subheader(t(lang, "search_results"))
-        if not matches_found:
-            st.info(t(lang, "no_match"))
-        else:
-            for doc in matches_found:
-                st.markdown(f"- **{doc['act_name']}** · {t(lang, 'act_number')}: {doc['act_number'] or t(lang, 'no_act_number')}")
-
     st.subheader(t(lang, "all_available_laws"))
-    docs.sort(key=lambda d: (d.get("year") or 0, d.get("act_name") or ""), reverse=True)
-    years = sorted({doc.get("year") or 0 for doc in docs}, reverse=True)
-    if not docs:
-        st.info(t(lang, "no_documents"))
-    for year in years:
-        st.markdown(f'<div class="law-year-heading">{t(lang, "law_year")} {year or "—"}</div>', unsafe_allow_html=True)
-        year_docs = [d for d in docs if (d.get("year") or 0) == year]
-        cols = st.columns(2, gap="medium")
-        for col, doc in zip(cols, year_docs):
-            with col:
-                with st.expander(f"{doc['act_name']}  ·  Act No. {doc['act_number']}" if doc.get("act_number") else doc["act_name"]):
-                    if doc.get("version_or_date"):
-                        st.caption(str(doc["version_or_date"]))
-                    chunks = chunks_by_doc.get(str(doc["id"]), [])
-                    pages = sorted({str(c.get("page_number") or "") for c in chunks if str(c.get("page_number") or "").isdigit()}, key=int)
-                    st.caption(f"{len(chunks)} · {t(lang, 'indexed_passages')} · {t(lang, 'page')} {pages[0] if pages else t(lang, 'none')}–{pages[-1] if pages else t(lang, 'none')}")
-                    if pages:
-                        page = st.selectbox(t(lang, "browse_pdf_page"), pages, key=f"law_page_{doc['id']}")
-                        for chunk in (c for c in chunks if str(c.get("page_number")) == page):
-                            st.write(chunk.get("text") or "")
-                    st.caption(f"{t(lang, 'verification')}: {localized_verification_status(lang, str(doc.get('verification_status') or 'unverified'))}")
+    render_pdf_law_library(lang, searcher.db, "laws", query, chosen_mode)
 
 
 def page_quiz(lang: str, quiz: QuizService) -> None:
@@ -778,70 +824,87 @@ def page_quiz(lang: str, quiz: QuizService) -> None:
             st.rerun()
 
 
-def page_admin_portal(lang: str, db: Database) -> None:
-    if st.session_state.is_admin:
-        st.markdown(f'<div class="panel hero"><h1>{t(lang, "admin_portal")}</h1></div>', unsafe_allow_html=True)
-        dashboard_col, upload_col = st.columns(2)
-        if dashboard_col.button(t(lang, "admin"), type="primary", use_container_width=True):
-            st.session_state.page = "admin"
-            st.rerun()
-        if upload_col.button(t(lang, "upload"), use_container_width=True):
+def page_admin_portal(lang: str, auth_db: Database) -> None:
+    st.markdown(f'<div class="panel hero"><h1>{t(lang, "admin_portal")}</h1></div>', unsafe_allow_html=True)
+    if st.session_state.user_id:
+        st.success(f"{t(lang, 'signed_in_as')} {st.session_state.username}")
+        if st.session_state.is_admin:
+            dashboard_col, upload_col = st.columns(2)
+            if dashboard_col.button(t(lang, "admin"), type="primary", use_container_width=True):
+                st.session_state.page = "admin"
+                st.rerun()
+            if upload_col.button(t(lang, "upload"), use_container_width=True):
+                st.session_state.page = "upload"
+                st.rerun()
+        elif st.button(t(lang, "upload"), type="primary"):
             st.session_state.page = "upload"
             st.rerun()
         return
 
-    if db.admin_count() == 0 and not config.PUBLIC_MODE:
-        _, auth_col, _ = st.columns([1, 1.1, 1])
-        with auth_col:
-            st.markdown(
-                f'<div class="admin-auth-title"><img src="data:image/png;base64,{base64.b64encode(LOGO_IMAGE.read_bytes()).decode("ascii")}" alt="Nyaya Mitra scales logo"><h1>{t(lang, "admin_setup_title")}</h1></div>',
-                unsafe_allow_html=True,
-            )
-            st.markdown(f'<p style="text-align:center;color:#617185;margin-top:-8px">{t(lang, "admin_setup_help")}</p>', unsafe_allow_html=True)
-            with st.container(key="admin_auth"):
-                with st.form("first_admin_setup"):
-                    username = st.text_input(t(lang, "username"), value=config.ADMIN_USERNAME or "admin")
-                    password = st.text_input(t(lang, "password"), type="password")
-                    confirmation = st.text_input(t(lang, "admin_password_confirm"), type="password")
-                    submitted = st.form_submit_button(t(lang, "admin_setup_title"), type="primary", use_container_width=True)
+    _, auth_col, _ = st.columns([1, 1.1, 1])
+    with auth_col:
+        st.markdown(
+            '<div class="admin-auth-title"><svg viewBox="0 0 64 64" width="54" height="54" role="img" aria-label="Nyaya Mitra logo" xmlns="http://www.w3.org/2000/svg"><circle cx="32" cy="32" r="29" fill="#fff8f0" stroke="#b51f35" stroke-width="2.5"/><path d="M32 12v36M22 50h20M25 18h14M15 23h34M32 18l-15 5m15-5 15 5M17 24l-7 14h14zm30 0-7 14h14zM25 45h14" fill="none" stroke="#14243a" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 38h14m16 0h14" stroke="#b51f35" stroke-width="2"/></svg><h1>Nyaya Mitra Account</h1></div>',
+            unsafe_allow_html=True,
+        )
+        modes = [t(lang, "sign_in"), t(lang, "sign_up")]
+        mode = st.radio("Account action", modes, horizontal=True, label_visibility="collapsed", key="account_action")
+        if mode == t(lang, "sign_up"):
+            with st.form("account_signup"):
+                username = st.text_input(t(lang, "username"), max_chars=30)
+                password = st.text_input(t(lang, "password"), type="password")
+                confirmation = st.text_input(t(lang, "confirm_password"), type="password")
+                submitted = st.form_submit_button(t(lang, "sign_up"), type="primary", use_container_width=True)
             if submitted:
-                if not username.strip():
-                    st.error(t(lang, "invalid_credentials"))
+                clean_username = username.strip()
+                if len(clean_username) < 3 or not re.fullmatch(r"[A-Za-z0-9_.-]{3,30}", clean_username):
+                    st.error(t(lang, "username_rules"))
                 elif len(password) < 12:
                     st.error(t(lang, "admin_password_minimum"))
                 elif password != confirmation:
                     st.error(t(lang, "admin_password_mismatch"))
-                elif db.admin_count() != 0:
-                    st.error(t(lang, "admin_config_missing"))
+                elif auth_db.get_account(clean_username):
+                    st.error(t(lang, "username_taken"))
+                elif auth_db.get_admin_hash(clean_username):
+                    st.error(t(lang, "username_taken"))
                 else:
-                    db.upsert_admin(username.strip(), hash_password(password))
-                    st.session_state.is_admin = True
-                    st.session_state.page = "admin"
-                    st.rerun()
-        return
-
-    if db.admin_count() == 0:
-        st.error(t(lang, "admin_config_missing"))
-        return
-
-    _, auth_col, _ = st.columns([1, 1.1, 1])
-    with auth_col:
-        logo_uri = "data:image/png;base64," + base64.b64encode(LOGO_IMAGE.read_bytes()).decode("ascii") if LOGO_IMAGE.exists() else ""
-        st.markdown(
-            f'<div class="admin-auth-title"><img src="{logo_uri}" alt="Nyaya Mitra scales logo"><h1>{t(lang, "admin_login_title")}</h1></div>',
-            unsafe_allow_html=True,
-        )
-        with st.container(key="admin_auth"):
-            with st.form("admin_login"):
+                    first_admin = auth_db.admin_count() == 0 and not config.PUBLIC_MODE
+                    user_id = uuid.uuid4().hex
+                    password_hash = hash_password(password)
+                    try:
+                        auth_db.create_account(user_id, clean_username, password_hash, first_admin)
+                        if first_admin:
+                            auth_db.upsert_admin(clean_username, password_hash)
+                        establish_account_session(user_id, clean_username, first_admin)
+                        st.rerun()
+                    except Exception:
+                        logger.exception("Account creation failed")
+                        st.error(t(lang, "username_taken"))
+        else:
+            with st.form("account_login"):
                 username = st.text_input(t(lang, "username"))
                 password = st.text_input(t(lang, "password"), type="password")
                 submitted = st.form_submit_button(t(lang, "sign_in"), type="primary", use_container_width=True)
-        if submitted:
-            if authenticate(db, username, password):
-                st.session_state.is_admin = True
-                st.session_state.page = "admin"
-                st.rerun()
-            st.error(t(lang, "admin_login_failed"))
+            if submitted:
+                account = auth_db.get_account(username)
+                if account and verify_password(password, str(account["password_hash"])):
+                    establish_account_session(
+                        str(account["user_id"]), str(account["username"]), bool(account["is_admin"])
+                    )
+                    st.rerun()
+                elif not account and authenticate(auth_db, username, password):
+                    # Preserve administrators configured through environment secrets.
+                    user_id = uuid.uuid4().hex
+                    clean_username = username.strip()
+                    stored_hash = auth_db.get_admin_hash(clean_username) or hash_password(password)
+                    if not auth_db.get_account(clean_username):
+                        auth_db.create_account(user_id, clean_username, stored_hash, True)
+                    else:
+                        user_id = str(auth_db.get_account(clean_username)["user_id"])
+                    establish_account_session(user_id, clean_username, True)
+                    st.rerun()
+                else:
+                    st.error(t(lang, "admin_login_failed"))
 
 
 def page_admin(lang: str, db: Database, processor: DocumentProcessor, rag: NyayMitraRAG) -> None:
@@ -991,7 +1054,7 @@ def upload_form(lang: str, processor: DocumentProcessor) -> None:
 
 
 def page_upload(lang: str, processor: DocumentProcessor) -> None:
-    if not require_admin(lang):
+    if not require_account(lang):
         return
     st.markdown(
         f'<div class="panel hero"><h1>{t(lang, "upload")}</h1><p>{t(lang, "admin_intro")}</p></div>',
@@ -1003,9 +1066,11 @@ def page_upload(lang: str, processor: DocumentProcessor) -> None:
 def main() -> None:
     inject_css()
     init_state()
+    auth_db = get_auth_db()
     db = get_db()
-    rag = get_rag(db)
-    processor = DocumentProcessor(db)
+    profile_id = st.session_state.get("user_id") or st.session_state.guest_profile_id
+    rag = get_rag(str(profile_id), db)
+    processor = DocumentProcessor(db, profile_upload_dir(db))
     searcher = LegalSearch(db)
     quiz = QuizService(db)
     header(LANGS[st.session_state.language])
@@ -1021,7 +1086,7 @@ def main() -> None:
     elif page == "quiz":
         page_quiz(lang, quiz)
     elif page == "admin_portal":
-        page_admin_portal(lang, db)
+        page_admin_portal(lang, auth_db)
     elif page == "admin":
         page_admin(lang, db, processor, rag)
     elif page == "upload":
