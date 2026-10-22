@@ -13,7 +13,7 @@ from urllib.parse import quote_plus
 import streamlit as st
 
 import config
-from auth import authenticate, bootstrap_admin, hash_password, verify_password
+from auth import authenticate, bootstrap_admin, hash_password
 from config import DB_PATH, KB_SEED_PATH, QUIZ_SEED_PATH, openai_configured
 from database import Database
 from document_processor import DocumentProcessingError, DocumentProcessor, sha256_bytes
@@ -85,6 +85,10 @@ def seed_bundled_pdfs(db: Database, uploads_dir: Path) -> None:
 def get_auth_db() -> Database:
     db = Database(DB_PATH)
     bootstrap_admin(db)
+    if config.ADMIN_PASSWORD:
+        stored_hash = db.get_admin_hash(config.ADMIN_USERNAME or "admin")
+        if stored_hash:
+            db.sync_admin_account(config.ADMIN_USERNAME or "admin", stored_hash)
     return db
 
 
@@ -141,7 +145,8 @@ header[data-testid="stHeader"],div[data-testid="stToolbar"],#MainMenu{display:no
 .brand{display:flex;align-items:center;gap:12px;background:#fff;padding:11px 14px;border:1px solid var(--line);border-radius:15px;box-shadow:var(--shadow);min-height:64px}
 .brand-mark{width:44px;height:44px;object-fit:contain;flex:none}
 .brand-centered{justify-content:center}
-.admin-auth-title{display:flex;align-items:center;justify-content:center;gap:13px;margin:0 0 18px;text-align:left}
+.admin-auth-title{display:flex;align-items:center;justify-content:center;gap:13px;margin:0 0 18px;text-align:center}
+.centered-section-title{text-align:center;margin:18px 0 14px}
 .admin-auth-title img{width:54px;height:54px;object-fit:contain}
 .admin-auth-title h1{font-family:'Source Serif 4',Georgia,serif;font-size:26px;line-height:1.15;margin:0;color:var(--navy)}
 .st-key-admin_auth form{max-width:390px;margin:0 auto}
@@ -164,8 +169,6 @@ div.stButton>button:hover{border-color:#d99aa5;color:var(--red);transform:transl
 .stButton>button[kind="primary"],.stFormSubmitButton>button[kind="primary"]{background:var(--red);border-color:var(--red);color:#fff}
 .stButton>button[kind="primary"]:hover,.stFormSubmitButton>button[kind="primary"]:hover{background:var(--red-dark);color:#fff}
 div[data-testid="stTextInput"] input,div[data-testid="stTextArea"] textarea,div[data-testid="stSelectbox"] div{border-radius:10px}
-div[data-testid="stRadio"] div[role="radiogroup"]{gap:.15rem;justify-content:flex-end;flex-wrap:wrap}
-div[data-testid="stRadio"] label{border-radius:9px;padding:5px 8px}
 .nav-note{font-size:11px;color:#8a97a8;font-weight:700;letter-spacing:.1em;padding:4px 4px 10px;text-transform:uppercase}
 .user-msg,.bot-msg{border-radius:12px;padding:12px 14px;margin:8px 0;font-size:14px;line-height:1.55}
 .user-msg{background:#f3f6fb;border:1px solid var(--line)}
@@ -284,6 +287,38 @@ def display_act_title(value: Any) -> str:
         return word[:1].upper() + word[1:].lower()
 
     return re.sub(r"[A-Za-z]+", title_word, raw)
+
+
+def button_choices(
+    choices: list[tuple[Any, str]], selected: Any, state_key: str, horizontal: bool = True,
+    disabled: bool = False,
+) -> Any:
+    """Render a colored, clickable choice group instead of radio controls."""
+    valid_values = {value for value, _ in choices}
+    if state_key not in st.session_state or (
+        st.session_state[state_key] is not None and st.session_state[state_key] not in valid_values
+    ):
+        st.session_state[state_key] = selected
+    columns = st.columns(len(choices)) if horizontal else [None] * len(choices)
+    for index, (value, label) in enumerate(choices):
+        target = columns[index]
+        if target is None:
+            clicked = st.button(
+                label, key=f"{state_key}_option_{index}", use_container_width=True,
+                type="primary" if st.session_state[state_key] == value else "secondary",
+                disabled=disabled,
+            )
+        else:
+            with target:
+                clicked = st.button(
+                    label, key=f"{state_key}_option_{index}", use_container_width=True,
+                    type="primary" if st.session_state[state_key] == value else "secondary",
+                    disabled=disabled,
+                )
+        if clicked:
+            st.session_state[state_key] = value
+            st.rerun()
+    return st.session_state[state_key]
 
 
 def extract_act_number(document: dict[str, Any], chunks: list[dict[str, Any]]) -> str:
@@ -418,7 +453,7 @@ def page_home(lang: str, db: Database, searcher: LegalSearch) -> None:
     if LEGAL_HERO_IMAGE.exists():
         hero_uri = "data:image/jpeg;base64," + base64.b64encode(LEGAL_HERO_IMAGE.read_bytes()).decode("ascii")
         st.markdown(f'<div class="home-hero-image"><img src="{hero_uri}" alt="Allahabad High Court building" /></div>', unsafe_allow_html=True)
-    st.subheader(t(lang, "updated_pdfs"))
+    st.markdown(f'<h2 class="centered-section-title">{t(lang, "updated_pdfs")}</h2>', unsafe_allow_html=True)
     st.caption(t(lang, "home_updates_note"))
     india_link, gazette_link = st.columns(2)
     india_link.link_button(t(lang, "india_code_link"), "https://www.indiacode.nic.in/indiacode/home.jsp", use_container_width=True)
@@ -677,11 +712,10 @@ def page_laws(lang: str, searcher: LegalSearch) -> None:
     mode_default = st.session_state.get("laws_search_mode", "name")
     if mode_default not in mode_keys:
         mode_default = "name"
-    chosen_mode = st.radio(
-        t(lang, "act_search_mode"), mode_keys, horizontal=True,
-        format_func=lambda key: mode_labels[key],
-        index=mode_keys.index(mode_default),
-        key="laws_search_mode_widget",
+    st.caption(t(lang, "act_search_mode"))
+    chosen_mode = button_choices(
+        [(key, mode_labels[key]) for key in mode_keys], mode_default,
+        "laws_search_mode_widget", horizontal=True,
     )
     st.session_state.laws_search_mode = chosen_mode
     query = st.text_input(t(lang, "act_search"), placeholder=t(lang, "act_search_placeholder"), key="act_search_input")
@@ -738,9 +772,11 @@ def page_quiz(lang: str, quiz: QuizService) -> None:
         st.session_state.quiz_details = []
         st.session_state.quiz_finished = False
         st.session_state.quiz_active = bool(st.session_state.quiz_round_questions)
+        profile_scope = st.session_state.user_id or st.session_state.guest_profile_id
         for item in st.session_state.quiz_round_questions:
             state_key = f"qradio_{selected_id}_{round_index}_{item['id']}"
             st.session_state.pop(state_key, None)
+            st.session_state.pop(f"quiz_answer_{profile_scope}_{selected_id}_{round_index}_{item['id']}", None)
 
     viewing_finished = st.session_state.quiz_finished and st.session_state.quiz_act_id == selected_id
     viewing_active = st.session_state.quiz_active and st.session_state.quiz_act_id == selected_id
@@ -794,7 +830,16 @@ def page_quiz(lang: str, quiz: QuizService) -> None:
     st.progress((idx + 1) / max(len(questions), 1))
     st.markdown(f"**{idx + 1}/{len(questions)}. {q['question']}**")
     options = [f"A. {q['choice_a']}", f"B. {q['choice_b']}", f"C. {q['choice_c']}", f"D. {q['choice_d']}"]
-    choice = st.radio(t(lang, "choose_answer"), options, index=None, key=f"qradio_{selected_id}_{st.session_state.quiz_round_index}_{q['id']}")
+    answer_state_key = (
+        f"quiz_answer_{st.session_state.user_id or st.session_state.guest_profile_id}_"
+        f"{selected_id}_{st.session_state.quiz_round_index}_{q['id']}"
+    )
+    st.caption(t(lang, "choose_answer"))
+    choice = button_choices(
+        list(enumerate(options)), None, answer_state_key, horizontal=False,
+        disabled=st.session_state.quiz_submitted_current,
+    )
+    choice = options[choice] if choice is not None else None
     if not st.session_state.quiz_submitted_current:
         if st.button(t(lang, "submit_answer"), type="primary", disabled=choice is None):
             st.session_state.quiz_answers[int(q["id"])] = (choice or "")[:1]
@@ -825,7 +870,7 @@ def page_quiz(lang: str, quiz: QuizService) -> None:
 
 
 def page_admin_portal(lang: str, auth_db: Database) -> None:
-    st.markdown(f'<div class="panel hero"><h1>{t(lang, "admin_portal")}</h1></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="panel hero centered-section-title"><h1>{t(lang, "admin_portal")}</h1></div>', unsafe_allow_html=True)
     if st.session_state.user_id:
         st.success(f"{t(lang, 'signed_in_as')} {st.session_state.username}")
         if st.session_state.is_admin:
@@ -844,67 +889,29 @@ def page_admin_portal(lang: str, auth_db: Database) -> None:
     _, auth_col, _ = st.columns([1, 1.1, 1])
     with auth_col:
         st.markdown(
-            '<div class="admin-auth-title"><svg viewBox="0 0 64 64" width="54" height="54" role="img" aria-label="Nyaya Mitra logo" xmlns="http://www.w3.org/2000/svg"><circle cx="32" cy="32" r="29" fill="#fff8f0" stroke="#b51f35" stroke-width="2.5"/><path d="M32 12v36M22 50h20M25 18h14M15 23h34M32 18l-15 5m15-5 15 5M17 24l-7 14h14zm30 0-7 14h14zM25 45h14" fill="none" stroke="#14243a" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 38h14m16 0h14" stroke="#b51f35" stroke-width="2"/></svg><h1>Nyaya Mitra Account</h1></div>',
+            f'<div class="admin-auth-title"><svg viewBox="0 0 64 64" width="54" height="54" role="img" aria-label="Nyaya Mitra logo" xmlns="http://www.w3.org/2000/svg"><circle cx="32" cy="32" r="29" fill="#fff8f0" stroke="#b51f35" stroke-width="2.5"/><path d="M32 12v36M22 50h20M25 18h14M15 23h34M32 18l-15 5m15-5 15 5M17 24l-7 14h14zm30 0-7 14h14zM25 45h14" fill="none" stroke="#14243a" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 38h14m16 0h14" stroke="#b51f35" stroke-width="2"/></svg><h1>{t(lang, "admin_portal")}</h1></div>',
             unsafe_allow_html=True,
         )
-        modes = [t(lang, "sign_in"), t(lang, "sign_up")]
-        mode = st.radio("Account action", modes, horizontal=True, label_visibility="collapsed", key="account_action")
-        if mode == t(lang, "sign_up"):
-            with st.form("account_signup"):
-                username = st.text_input(t(lang, "username"), max_chars=30)
-                password = st.text_input(t(lang, "password"), type="password")
-                confirmation = st.text_input(t(lang, "confirm_password"), type="password")
-                submitted = st.form_submit_button(t(lang, "sign_up"), type="primary", use_container_width=True)
-            if submitted:
-                clean_username = username.strip()
-                if len(clean_username) < 3 or not re.fullmatch(r"[A-Za-z0-9_.-]{3,30}", clean_username):
-                    st.error(t(lang, "username_rules"))
-                elif len(password) < 12:
-                    st.error(t(lang, "admin_password_minimum"))
-                elif password != confirmation:
-                    st.error(t(lang, "admin_password_mismatch"))
-                elif auth_db.get_account(clean_username):
-                    st.error(t(lang, "username_taken"))
-                elif auth_db.get_admin_hash(clean_username):
-                    st.error(t(lang, "username_taken"))
+        with st.form("admin_login"):
+            username = st.text_input(t(lang, "username"), value=config.ADMIN_USERNAME or "NyayaMitra")
+            password = st.text_input(t(lang, "password"), type="password")
+            submitted = st.form_submit_button(t(lang, "admin_portal_access"), type="primary", use_container_width=True)
+        if submitted:
+            clean_username = username.strip()
+            account = auth_db.get_account(clean_username)
+            configured_username = (config.ADMIN_USERNAME or "admin").strip()
+            if clean_username.casefold() == configured_username.casefold() and authenticate(auth_db, clean_username, password):
+                stored_hash = auth_db.get_admin_hash(clean_username) or hash_password(password)
+                if account:
+                    auth_db.sync_admin_account(clean_username, stored_hash)
+                    user_id = str(account["user_id"])
                 else:
-                    first_admin = auth_db.admin_count() == 0 and not config.PUBLIC_MODE
                     user_id = uuid.uuid4().hex
-                    password_hash = hash_password(password)
-                    try:
-                        auth_db.create_account(user_id, clean_username, password_hash, first_admin)
-                        if first_admin:
-                            auth_db.upsert_admin(clean_username, password_hash)
-                        establish_account_session(user_id, clean_username, first_admin)
-                        st.rerun()
-                    except Exception:
-                        logger.exception("Account creation failed")
-                        st.error(t(lang, "username_taken"))
-        else:
-            with st.form("account_login"):
-                username = st.text_input(t(lang, "username"))
-                password = st.text_input(t(lang, "password"), type="password")
-                submitted = st.form_submit_button(t(lang, "sign_in"), type="primary", use_container_width=True)
-            if submitted:
-                account = auth_db.get_account(username)
-                if account and verify_password(password, str(account["password_hash"])):
-                    establish_account_session(
-                        str(account["user_id"]), str(account["username"]), bool(account["is_admin"])
-                    )
-                    st.rerun()
-                elif not account and authenticate(auth_db, username, password):
-                    # Preserve administrators configured through environment secrets.
-                    user_id = uuid.uuid4().hex
-                    clean_username = username.strip()
-                    stored_hash = auth_db.get_admin_hash(clean_username) or hash_password(password)
-                    if not auth_db.get_account(clean_username):
-                        auth_db.create_account(user_id, clean_username, stored_hash, True)
-                    else:
-                        user_id = str(auth_db.get_account(clean_username)["user_id"])
-                    establish_account_session(user_id, clean_username, True)
-                    st.rerun()
-                else:
-                    st.error(t(lang, "admin_login_failed"))
+                    auth_db.create_account(user_id, clean_username, stored_hash, True)
+                establish_account_session(user_id, clean_username, True)
+                st.rerun()
+            else:
+                st.error(t(lang, "admin_login_failed"))
 
 
 def page_admin(lang: str, db: Database, processor: DocumentProcessor, rag: NyayMitraRAG) -> None:
@@ -1008,7 +1015,16 @@ def upload_form(lang: str, processor: DocumentProcessor) -> None:
     mode_options = [t(lang, "add_new_pdf")]
     if existing_docs:
         mode_options.append(t(lang, "update_existing_pdf"))
-    mode = st.radio("Library action", mode_options, horizontal=True, key="pdf_library_action")
+    profile_scope = processor.db.db_path.parent.name
+    upload_action_key = f"pdf_library_action_{profile_scope}"
+    current_action = st.session_state.get(upload_action_key, mode_options[0])
+    if current_action not in mode_options:
+        current_action = mode_options[0]
+    button_choices(
+        [(option, option) for option in mode_options], current_action,
+        upload_action_key, horizontal=True,
+    )
+    mode = st.session_state[upload_action_key]
     selected_doc: dict[str, Any] | None = None
     if len(mode_options) > 1 and mode == t(lang, "update_existing_pdf"):
         doc_ids = [str(doc["id"]) for doc in existing_docs]
