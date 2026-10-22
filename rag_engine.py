@@ -277,8 +277,12 @@ Hard rules:
 - Do not treat an older Act as a substitute for a newer one (for example do not silently replace IPC with BNS or CrPC with BNSS).
 - If sources conflict, say so transparently.
 - If sources are insufficient, say that clearly and do not fill gaps from training data.
-- Write every explanation, heading, label, warning, and next step in {self._language_name(lang)}. Do not leave explanatory sentences in English.
-- Translate the relevant legal meaning into {self._language_name(lang)} as an unofficial plain-language translation. Do not copy long statutory quotations into the answer; the original passage is available separately in the source viewer.
+- Write the entire answer, including headings, explanations, translated provisions, and practical steps, in {self._language_name(lang)}. Do not leave explanatory sentences in English. Keep only official Act names, section/article identifiers, proper nouns, and URLs in their source form where needed for accurate citations.
+- Explain the law in detail, not merely list the retrieved passages. For each relevant provision, give a short faithful unofficial translation into {self._language_name(lang)}, explain its key terms and practical effect in plain language, and connect it to the facts actually stated in the user's question. Never invent missing facts.
+- The user wants to know where the law appears: cite the exact Act, section/article, and PDF page from the supplied source metadata. Identify the source passage as an unofficial translation; do not imply that the translation is the official statutory wording.
+- Give practical next steps as a numbered list only when they are supported by the supplied sources. If a procedure, deadline, forum, or document requirement is not stated in the supplied sources, explicitly say it is not established by the retrieved text instead of guessing.
+- If the user gives too few facts to apply a provision, explain what the supplied provision generally says and ask a brief follow-up question in {self._language_name(lang)}.
+- Do not copy long statutory quotations into the answer. The original PDF passage is available separately in the source viewer; include only a short translated extract when useful.
 - Preserve Act names, section numbers, dates, URLs, and proper nouns as written in the source when needed for accurate citations. Clearly label translations as unofficial.
 - Do not present the response as legal advice or guarantee an outcome.
 - Only cite SOURCE numbers that appear below.
@@ -290,14 +294,16 @@ User question:
 Retrieved sources:
 {source_text}
 
-Produce a concise citizen-friendly response with localized headings for:
-1. Information found in the retrieved sources
-2. Unofficial plain-language translation and explanation
-3. Suggested general next steps
-4. Limitations
-5. Sources (cite only the Act name, section, page, source number, and URL; do not paste the source passage)
+Produce a detailed but readable citizen-friendly response with localized headings for:
+1. Direct answer to the user's question
+2. Relevant law: Act name, section/article, and PDF page
+3. Unofficial translation of the relevant rule into {self._language_name(lang)}
+4. Detailed plain-language explanation of what the rule means
+5. How it relates to the facts the user gave (or what facts are missing)
+6. Practical next steps, clearly distinguishing steps supported by the supplied text from details the text does not establish
+7. Sources (cite only source numbers and the supplied Act name, section/article, page, and URL; do not paste long source passages)
 
-For uncertain items, use the equivalent of "Not established by the retrieved sources" in {self._language_name(lang)}.
+For uncertain items, use the equivalent of "Not established by the retrieved sources" in {self._language_name(lang)}. Avoid generic filler and do not repeat a disclaimer in every section.
 The final answer must be readable entirely in {self._language_name(lang)} except for identifiers and official names/URLs that must remain unchanged.
 """
 
@@ -317,6 +323,9 @@ The final answer must be readable entirely in {self._language_name(lang)} except
     def _fallback_answer(self, sources: list[dict[str, Any]], lang: str) -> str:
         if not sources:
             return t(lang, "insufficient")
+        # Without a configured language model, do not pretend to translate or
+        # explain arbitrary statutory text. Give useful citations and the exact
+        # PDF location, and state clearly what capability needs configuration.
         parts = [t(lang, "answer_intro"), "", t(lang, "answer_retrieved_heading")]
         for i, s in enumerate(sources[:3], start=1):
             section = s.get("section_number") or s.get("section") or "unknown"
