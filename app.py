@@ -109,6 +109,12 @@ header[data-testid="stHeader"],div[data-testid="stToolbar"],#MainMenu{display:no
 [data-testid="stSidebar"] div.stButton>button{min-height:38px;padding:.35rem .6rem;text-align:left;font-size:13px;border-radius:9px}
 .brand{display:flex;align-items:center;gap:12px;background:#fff;padding:11px 14px;border:1px solid var(--line);border-radius:15px;box-shadow:var(--shadow);min-height:64px}
 .brand-mark{width:44px;height:44px;object-fit:contain;flex:none}
+.brand-centered{justify-content:center}
+.admin-auth-title{display:flex;align-items:center;justify-content:center;gap:13px;margin:0 0 18px;text-align:left}
+.admin-auth-title img{width:54px;height:54px;object-fit:contain}
+.admin-auth-title h1{font-family:'Source Serif 4',Georgia,serif;font-size:26px;line-height:1.15;margin:0;color:var(--navy)}
+.st-key-admin_auth form{max-width:390px;margin:0 auto}
+.st-key-admin_auth div[data-testid="stTextInput"]{margin-bottom:.25rem}
 .brand-name{font-size:25px;font-weight:760;letter-spacing:-.7px;color:var(--navy);line-height:1}
 .brand-name span{color:var(--red)}
 .brand-sub{color:var(--muted);font-size:12px;margin-top:4px;font-weight:500}
@@ -234,31 +240,34 @@ def extract_act_number(document: dict[str, Any], chunks: list[dict[str, Any]]) -
 
 
 def header(lang: str) -> None:
+    admin_portal = st.session_state.get("page") == "admin_portal"
     h1, h2, h3 = st.columns([2.1, 5.0, 1.1], vertical_alignment="center")
     with h1:
         logo_uri = "data:image/png;base64," + base64.b64encode(LOGO_IMAGE.read_bytes()).decode("ascii") if LOGO_IMAGE.exists() else ""
+        brand_class = "brand brand-centered" if admin_portal else "brand"
         st.markdown(
-            f'<div class="brand"><img class="brand-mark" src="{logo_uri}" alt="Nyaya Mitra logo"><div><div class="brand-name">Nyaya <span>Mitra</span></div>'
+            f'<div class="{brand_class}"><img class="brand-mark" src="{logo_uri}" alt="Nyaya Mitra logo"><div><div class="brand-name">Nyaya <span>Mitra</span></div>'
             f'<div class="brand-sub">{t(lang, "brand_sub")}</div></div></div>',
             unsafe_allow_html=True,
         )
-    with h2:
-        with st.form("global_search", clear_on_submit=False):
-            q1, q2, q3 = st.columns([3.2, 1.5, 1.0], vertical_alignment="center")
-            term = q1.text_input(t(lang, "search"), placeholder=t(lang, "search_placeholder"), label_visibility="collapsed")
-            cats = [t(lang, "act_name_option"), t(lang, "act_number_option")]
-            cat_en = ["name", "number"]
-            cat_label = q2.selectbox(t(lang, "all_categories"), cats, label_visibility="collapsed")
-            submitted = q3.form_submit_button(t(lang, "search"), type="primary", use_container_width=True)
-        if submitted and (term or "").strip():
-            if not config.PUBLIC_MODE:
-                get_db().log_search(term.strip(), cat_en[cats.index(cat_label)])
-            st.session_state.laws_query = term.strip()
-            st.session_state.laws_search_mode = cat_en[cats.index(cat_label)]
-            st.session_state.laws_search_mode_widget = cat_en[cats.index(cat_label)]
-            st.session_state.act_search_input = term.strip()
-            st.session_state.page = "laws"
-            st.rerun()
+    if not admin_portal:
+        with h2:
+            with st.form("global_search", clear_on_submit=False):
+                q1, q2, q3 = st.columns([3.2, 1.5, 1.0], vertical_alignment="center")
+                term = q1.text_input(t(lang, "search"), placeholder=t(lang, "search_placeholder"), label_visibility="collapsed")
+                cats = [t(lang, "act_name_option"), t(lang, "act_number_option")]
+                cat_en = ["name", "number"]
+                cat_label = q2.selectbox(t(lang, "all_categories"), cats, label_visibility="collapsed")
+                submitted = q3.form_submit_button(t(lang, "search"), type="primary", use_container_width=True)
+            if submitted and (term or "").strip():
+                if not config.PUBLIC_MODE:
+                    get_db().log_search(term.strip(), cat_en[cats.index(cat_label)])
+                st.session_state.laws_query = term.strip()
+                st.session_state.laws_search_mode = cat_en[cats.index(cat_label)]
+                st.session_state.laws_search_mode_widget = cat_en[cats.index(cat_label)]
+                st.session_state.act_search_input = term.strip()
+                st.session_state.page = "laws"
+                st.rerun()
     with h3:
         st.selectbox(
             t(lang, "language"), list(LANGS.keys()), key="language",
@@ -535,11 +544,28 @@ def page_laws(lang: str, searcher: LegalSearch) -> None:
     catalog_entries = catalog_data.get("entries", []) if isinstance(catalog_data, dict) else []
     st.subheader(t(lang, "central_catalog_title"))
     st.caption(t(lang, "central_catalog_note"))
-    catalog_query = query.strip().casefold()
-    if chosen_mode == "number":
-        catalog_rows = [row for row in catalog_entries if not catalog_query or catalog_query in str(row.get("act_number", "")).casefold() or catalog_query in str(row.get("year", ""))]
-    else:
-        catalog_rows = [row for row in catalog_entries if not catalog_query or catalog_query in str(row.get("act_name", "")).casefold()]
+    catalog_search = st.text_input(
+        t(lang, "central_catalog_filter"),
+        value=query.strip(),
+        key="central_catalog_search_input",
+    )
+    catalog_query = catalog_search.strip().casefold()
+    year_options = sorted({int(row["year"]) for row in catalog_entries if str(row.get("year", "")).isdigit()}, reverse=True)
+    selected_year = st.selectbox(
+        t(lang, "central_catalog_year"),
+        [None, *year_options],
+        format_func=lambda year: t(lang, "central_catalog_year_all") if year is None else str(year),
+        key="central_catalog_year_filter",
+    )
+    catalog_rows = [
+        row for row in catalog_entries
+        if not catalog_query or any(
+            catalog_query in str(row.get(field, "")).casefold()
+            for field in ("act_name", "act_number", "year")
+        )
+    ]
+    if selected_year is not None:
+        catalog_rows = [row for row in catalog_rows if int(row.get("year", 0)) == selected_year]
     st.caption(f"{len(catalog_rows):,} / {len(catalog_entries):,} {t(lang, 'central_catalog_results')} · Source list: {catalog_data.get('source_published', 'unknown') if isinstance(catalog_data, dict) else 'unavailable'}")
     if catalog_rows:
         st.dataframe(
@@ -555,7 +581,23 @@ def page_laws(lang: str, searcher: LegalSearch) -> None:
             key="official_central_act_selected",
         )
         official_act_url = "https://www.indiacode.nic.in/handle/123456789/1359/simple-search?query=" + quote_plus(selected_act["act_name"])
+        st.markdown(f"#### {t(lang, 'central_catalog_details')}")
+        detail_col1, detail_col2, detail_col3 = st.columns(3)
+        detail_col1.metric(t(lang, "central_catalog_year_label"), selected_act["year"])
+        detail_col2.metric(t(lang, "central_catalog_number"), selected_act["act_number"])
+        detail_col3.metric(t(lang, "central_catalog_serial"), selected_act["serial"])
+        st.markdown(f"**{selected_act['act_name']}**")
+        st.caption(f"{t(lang, 'central_catalog_publisher')}: {catalog_data.get('publisher', 'Legislative Department, Government of India')}")
         st.link_button(t(lang, "india_code_full_text"), official_act_url)
+    source_pdf_path = Path(__file__).resolve().parent / "data" / "central_acts_alphabetical_2025.pdf"
+    if source_pdf_path.is_file():
+        st.download_button(
+            t(lang, "central_catalog_original_pdf"),
+            data=source_pdf_path.read_bytes(),
+            file_name=source_pdf_path.name,
+            mime="application/pdf",
+            key="central_acts_source_pdf_download",
+        )
     portal_col, states_col = st.columns(2)
     portal_col.link_button(t(lang, "india_code_portal"), "https://www.indiacode.nic.in/", use_container_width=True)
     states_col.link_button(t(lang, "state_acts_portal"), "https://www.indiacode.nic.in/", use_container_width=True)
@@ -746,43 +788,57 @@ def page_admin_portal(lang: str, db: Database) -> None:
         return
 
     if db.admin_count() == 0 and not config.PUBLIC_MODE:
-        st.markdown(f'<div class="panel hero"><h1>{t(lang, "admin_setup_title")}</h1><p>{t(lang, "admin_setup_help")}</p></div>', unsafe_allow_html=True)
-        with st.form("first_admin_setup"):
-            username = st.text_input(t(lang, "username"), value=config.ADMIN_USERNAME or "admin")
-            password = st.text_input(t(lang, "password"), type="password")
-            confirmation = st.text_input(t(lang, "admin_password_confirm"), type="password")
-            submitted = st.form_submit_button(t(lang, "admin_setup_title"), type="primary")
-        if submitted:
-            if not username.strip():
-                st.error(t(lang, "invalid_credentials"))
-            elif len(password) < 12:
-                st.error(t(lang, "admin_password_minimum"))
-            elif password != confirmation:
-                st.error(t(lang, "admin_password_mismatch"))
-            elif db.admin_count() != 0:
-                st.error(t(lang, "admin_config_missing"))
-            else:
-                db.upsert_admin(username.strip(), hash_password(password))
-                st.session_state.is_admin = True
-                st.session_state.page = "admin"
-                st.rerun()
+        _, auth_col, _ = st.columns([1, 1.1, 1])
+        with auth_col:
+            st.markdown(
+                f'<div class="admin-auth-title"><img src="data:image/png;base64,{base64.b64encode(LOGO_IMAGE.read_bytes()).decode("ascii")}" alt="Nyaya Mitra scales logo"><h1>{t(lang, "admin_setup_title")}</h1></div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(f'<p style="text-align:center;color:#617185;margin-top:-8px">{t(lang, "admin_setup_help")}</p>', unsafe_allow_html=True)
+            with st.container(key="admin_auth"):
+                with st.form("first_admin_setup"):
+                    username = st.text_input(t(lang, "username"), value=config.ADMIN_USERNAME or "admin")
+                    password = st.text_input(t(lang, "password"), type="password")
+                    confirmation = st.text_input(t(lang, "admin_password_confirm"), type="password")
+                    submitted = st.form_submit_button(t(lang, "admin_setup_title"), type="primary", use_container_width=True)
+            if submitted:
+                if not username.strip():
+                    st.error(t(lang, "invalid_credentials"))
+                elif len(password) < 12:
+                    st.error(t(lang, "admin_password_minimum"))
+                elif password != confirmation:
+                    st.error(t(lang, "admin_password_mismatch"))
+                elif db.admin_count() != 0:
+                    st.error(t(lang, "admin_config_missing"))
+                else:
+                    db.upsert_admin(username.strip(), hash_password(password))
+                    st.session_state.is_admin = True
+                    st.session_state.page = "admin"
+                    st.rerun()
         return
 
     if db.admin_count() == 0:
         st.error(t(lang, "admin_config_missing"))
         return
 
-    st.markdown(f'<div class="panel hero"><h1>{t(lang, "admin_login_title")}</h1></div>', unsafe_allow_html=True)
-    with st.form("admin_login"):
-        username = st.text_input(t(lang, "username"))
-        password = st.text_input(t(lang, "password"), type="password")
-        submitted = st.form_submit_button(t(lang, "sign_in"), type="primary")
-    if submitted:
-        if authenticate(db, username, password):
-            st.session_state.is_admin = True
-            st.session_state.page = "admin"
-            st.rerun()
-        st.error(t(lang, "admin_login_failed"))
+    _, auth_col, _ = st.columns([1, 1.1, 1])
+    with auth_col:
+        logo_uri = "data:image/png;base64," + base64.b64encode(LOGO_IMAGE.read_bytes()).decode("ascii") if LOGO_IMAGE.exists() else ""
+        st.markdown(
+            f'<div class="admin-auth-title"><img src="{logo_uri}" alt="Nyaya Mitra scales logo"><h1>{t(lang, "admin_login_title")}</h1></div>',
+            unsafe_allow_html=True,
+        )
+        with st.container(key="admin_auth"):
+            with st.form("admin_login"):
+                username = st.text_input(t(lang, "username"))
+                password = st.text_input(t(lang, "password"), type="password")
+                submitted = st.form_submit_button(t(lang, "sign_in"), type="primary", use_container_width=True)
+        if submitted:
+            if authenticate(db, username, password):
+                st.session_state.is_admin = True
+                st.session_state.page = "admin"
+                st.rerun()
+            st.error(t(lang, "admin_login_failed"))
 
 
 def page_admin(lang: str, db: Database, processor: DocumentProcessor, rag: NyayMitraRAG) -> None:
