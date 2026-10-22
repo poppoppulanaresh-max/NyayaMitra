@@ -8,7 +8,6 @@ import uuid
 from html import escape
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus
 
 import streamlit as st
 
@@ -20,7 +19,7 @@ from document_processor import DocumentProcessingError, DocumentProcessor, sha25
 from legal_search import LegalSearch
 from quiz import QuizService
 from rag_engine import NyayMitraRAG
-from translations import LANGS, suggested_questions, suggested_question_prompts, t
+from translations import LANGS, suggested_questions, suggested_question_prompts, t as translate
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("nyaya.app")
@@ -30,6 +29,14 @@ LAWS_IMAGE = ASSETS_DIR / "bengaluru-high-court.jpg"
 CHAT_IMAGE = ASSETS_DIR / "legal-books.jpg"
 SDG_16_IMAGE = ASSETS_DIR / "sdg-16.jpg"
 LOGO_IMAGE = ASSETS_DIR / "nyaya-mitra-mark.png"
+
+
+def t(lang: str, key: str) -> str:
+    """Never show an untranslated underscore key as interface text."""
+    value = translate(lang, key)
+    if value == key or re.fullmatch(r"[a-z0-9]+(?:_[a-z0-9]+)+", value):
+        return " ".join(part.capitalize() for part in value.replace("_", " ").split())
+    return value
 
 st.set_page_config(
     page_title="Nyaya Mitra",
@@ -187,6 +194,10 @@ header[data-testid="stHeader"],div[data-testid="stToolbar"],#MainMenu{display:no
 .brand-centered{justify-content:center}
 .admin-auth-title{display:flex;align-items:center;justify-content:center;gap:13px;margin:0 0 18px;text-align:center}
 .centered-section-title{text-align:center;margin:18px 0 14px}
+.law-news-headline{display:grid;grid-template-columns:140px 1fr;gap:18px;align-items:center;max-width:1040px;padding:17px 18px;background:#fff;border:1px solid var(--line);border-left:4px solid var(--red);border-radius:12px;margin:10px auto;box-shadow:0 2px 8px rgba(22,38,58,.035)}
+.law-news-date{font-size:11px;line-height:1.5;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.06em}
+.law-news-headline h3{font-size:17px;margin:0;color:var(--navy);line-height:1.4}
+.law-news-headline p{font-size:12px;color:var(--muted);margin:4px 0 0}
 .admin-auth-title img{width:54px;height:54px;object-fit:contain}
 .admin-auth-title h1{font-family:'Source Serif 4',Georgia,serif;font-size:26px;line-height:1.15;margin:0;color:var(--navy)}
 .st-key-admin_auth form{max-width:390px;margin:0 auto}
@@ -251,6 +262,7 @@ div[data-testid="stImage"] img{display:block;width:100%;object-fit:cover;border-
 footer{visibility:hidden}
 @media(max-width:1100px){.block-container{padding-left:.7rem;padding-right:.7rem}.chat-heading{align-items:flex-start;flex-direction:column}.chat-status{width:100%}}
 @media(max-width:1000px){.block-container{padding-left:1rem;padding-right:1rem}div[data-testid="stHorizontalBlock"]{flex-wrap:wrap!important}div[data-testid="stHorizontalBlock"]>div[data-testid="column"]{min-width:min(100%,620px)!important;width:100%!important;flex:1 1 100%!important}.module-banner{grid-template-columns:1fr}.module-banner img{height:190px}}
+@media(max-width:620px){.law-news-headline{grid-template-columns:1fr;gap:4px}}
 @media(max-width:760px){[data-testid="stSidebar"]{width:min(84vw,280px)!important;min-width:min(84vw,280px)!important;max-width:min(84vw,280px)!important}.brand-name{font-size:21px}.block-container{padding:.5rem .55rem 1rem}.chat-surface{padding:10px;min-height:0}.panel{padding:14px}.chat-heading h1{font-size:22px}.home-hero-image img{height:240px}}
 @media(max-height:820px){.block-container{padding-top:.8rem}}
 button:focus,input:focus,textarea:focus,select:focus{outline:2px solid var(--red)!important;outline-offset:2px}
@@ -371,7 +383,7 @@ def extract_act_number(document: dict[str, Any], chunks: list[dict[str, Any]]) -
 
 
 def header(lang: str) -> None:
-    admin_portal = st.session_state.get("page") == "admin_portal"
+    hide_global_search = st.session_state.get("page") in {"admin_portal", "home", "laws"}
     h1, h2, h3 = st.columns([2.1, 5.0, 1.1], vertical_alignment="center")
     with h1:
         with st.container(border=True):
@@ -384,7 +396,7 @@ def header(lang: str) -> None:
                 f'<div class="brand-name">Nyaya <span>Mitra</span></div><div class="brand-sub">{t(lang, "brand_sub")}</div>',
                 unsafe_allow_html=True,
             )
-    if not admin_portal:
+    if not hide_global_search:
         with h2:
             with st.form("global_search", clear_on_submit=False):
                 q1, q2, q3 = st.columns([3.2, 1.5, 1.0], vertical_alignment="center")
@@ -417,7 +429,7 @@ def sidebar_nav(lang: str) -> None:
             ("laws", t(lang, "laws")),
             ("chat", t(lang, "chat")),
             ("quiz", t(lang, "quiz")),
-            ("admin_portal", t(lang, "admin_portal")),
+            ("admin_portal", "Admin Portal"),
         ]
         if st.session_state.user_id:
             items.append(("upload", t(lang, "upload")))
@@ -460,7 +472,7 @@ def require_account(lang: str) -> bool:
     if st.session_state.get("user_id"):
         return True
     st.warning(t(lang, "auth_required"))
-    if st.button(t(lang, "admin_portal"), key="upload_sign_in_link"):
+    if st.button("Admin Portal", key="upload_sign_in_link"):
         st.session_state.page = "admin_portal"
         st.rerun()
     return False
@@ -493,16 +505,30 @@ def page_home(lang: str, db: Database, searcher: LegalSearch) -> None:
     if LEGAL_HERO_IMAGE.exists():
         hero_uri = "data:image/jpeg;base64," + base64.b64encode(LEGAL_HERO_IMAGE.read_bytes()).decode("ascii")
         st.markdown(f'<div class="home-hero-image"><img src="{hero_uri}" alt="Allahabad High Court building" /></div>', unsafe_allow_html=True)
-    st.markdown(f'<h2 class="centered-section-title">{t(lang, "updated_pdfs")}</h2>', unsafe_allow_html=True)
-    st.caption(t(lang, "home_updates_note"))
-    india_link, gazette_link = st.columns(2)
-    india_link.link_button(t(lang, "india_code_link"), "https://www.indiacode.nic.in/indiacode/home.jsp", use_container_width=True)
-    gazette_link.link_button(t(lang, "gazette_link"), "https://egazette.gov.in/", use_container_width=True)
-    render_pdf_law_library(lang, db, "home")
+    st.markdown('<h2 class="centered-section-title">Recently Updated Laws</h2>', unsafe_allow_html=True)
+    docs = [
+        doc for doc in db.list_documents(active_only=True)
+        if str(doc.get("original_filename") or "").lower().endswith(".pdf")
+        and doc.get("indexing_status") == "indexed"
+    ]
+    docs.sort(key=lambda doc: str(doc.get("upload_date") or ""), reverse=True)
+    if not docs:
+        st.info(t(lang, "no_documents"))
+        return
+    for doc in docs[:12]:
+        title = display_act_title(doc.get("act_name") or Path(str(doc.get("original_filename") or "")).stem)
+        year = act_year(title)
+        date_label = display_act_title(doc.get("version_or_date") or doc.get("upload_date") or "Recently added")
+        detail = f"Added to the legal information library{f' · {year}' if year else ''}"
+        st.markdown(
+            f'<article class="law-news-headline"><div class="law-news-date">{escape(date_label)}</div>'
+            f'<div><h3>{escape(title)}</h3><p>{escape(detail)}</p></div></article>',
+            unsafe_allow_html=True,
+        )
 
 
-def render_pdf_law_library(lang: str, db: Database, key_prefix: str, query: str = "", mode: str = "name") -> None:
-    """Show actual indexed Act PDFs, downloadable files, and extracted Act text."""
+def render_pdf_law_library(lang: str, db: Database, query: str = "") -> None:
+    """List indexed Act PDFs with expandable text and a direct PDF download."""
     docs = [
         doc for doc in db.list_documents(active_only=True)
         if str(doc.get("original_filename") or "").lower().endswith(".pdf")
@@ -516,33 +542,31 @@ def render_pdf_law_library(lang: str, db: Database, key_prefix: str, query: str 
         doc["act_number"] = extract_act_number(doc, chunks_by_doc.get(str(doc["id"]), []))
         doc["year"] = act_year(doc.get("act_name", ""))
 
-    st.caption(f"{len(docs)} · {t(lang, 'indexed_pdf_count')}")
+    st.caption(f"{len(docs)} indexed legal PDFs")
     if not docs:
         st.info(t(lang, "no_documents"))
         return
-    search = st.text_input(
-        t(lang, "act_search"),
-        value=query,
-        placeholder=t(lang, "act_search_placeholder"),
-        key=f"{key_prefix}_indexed_pdf_search",
-    ).strip().casefold()
+    search = (query or "").strip().casefold()
     if search:
-        if mode == "number":
-            needle = search.replace("act no.", "").replace("no.", "").strip()
-            docs = [doc for doc in docs if needle in str(doc.get("act_number") or "").casefold()]
-        else:
-            docs = [doc for doc in docs if search in str(doc.get("act_name") or "").replace("_", " ").casefold()]
+        search_terms = re.sub(r"[^a-z0-9]+", " ", search).strip()
+        number_terms = re.sub(r"^act\s+", "", search_terms)
+        docs = [
+            doc for doc in docs
+            if any(term and term in re.sub(
+                r"[^a-z0-9]+", " ",
+                " ".join(str(doc.get(field) or "") for field in ("act_name", "act_number", "original_filename", "year")).casefold(),
+            ) for term in {search_terms, number_terms})
+        ]
     if not docs:
         st.info(t(lang, "no_match"))
         return
 
-    for doc in sorted(docs, key=lambda row: (row.get("year") or 0, row.get("act_name") or ""), reverse=True):
+    for doc in sorted(docs, key=lambda row: str(row.get("upload_date") or ""), reverse=True):
         chunks = chunks_by_doc.get(str(doc["id"]), [])
         raw_title = str(doc.get("act_name") or doc.get("original_filename") or t(lang, "uploaded_pdf"))
         title = display_act_title(raw_title)
         label = f"{title} · Act {doc['act_number']} ({doc['year']})" if doc.get("act_number") else title
-        with st.container(border=True):
-            st.markdown(f"#### {escape(label)}")
+        with st.expander(label, expanded=False):
             st.caption(
                 f"{doc.get('page_count') or 0} {t(lang, 'page')} · "
                 f"{len(chunks)} {t(lang, 'indexed_passages')} · "
@@ -550,6 +574,16 @@ def render_pdf_law_library(lang: str, db: Database, key_prefix: str, query: str 
             )
             if doc.get("version_or_date"):
                 st.caption(str(doc["version_or_date"]))
+            stored_pdf = profile_upload_dir(db) / str(doc.get("stored_filename") or "")
+            if stored_pdf.is_file():
+                st.download_button(
+                    "Download PDF",
+                    data=stored_pdf.read_bytes(),
+                    file_name=str(doc.get("original_filename") or "legal_document.pdf"),
+                    mime="application/pdf",
+                    key=f"laws_download_act_{doc['id']}",
+                    use_container_width=True,
+                )
             first_chunks = chunks[:2]
             if first_chunks:
                 st.caption(t(lang, "act_text_preview"))
@@ -557,34 +591,22 @@ def render_pdf_law_library(lang: str, db: Database, key_prefix: str, query: str 
                     if chunk.get("section_number") and chunk.get("section_number") != "unknown":
                         st.markdown(f"**{t(lang, 'section')} {escape(str(chunk['section_number']))}**")
                     st.write(chunk.get("text") or "")
-            read_col, download_col = st.columns(2)
-            stored_pdf = profile_upload_dir(db) / str(doc.get("stored_filename") or "")
-            if stored_pdf.is_file():
-                download_col.download_button(
-                    t(lang, "download_pdf"),
-                    data=stored_pdf.read_bytes(),
-                    file_name=str(doc.get("original_filename") or "legal_document.pdf"),
-                    mime="application/pdf",
-                    key=f"{key_prefix}_download_act_{doc['id']}",
-                    use_container_width=True,
-                )
             official_url = str(doc.get("source_url") or "").strip()
-            if not official_url:
-                official_url = "https://www.indiacode.nic.in/handle/123456789/1359/simple-search?query=" + quote_plus(title)
-            read_col.link_button(t(lang, "open_official_act"), official_url, use_container_width=True)
+            if official_url:
+                st.link_button("Open official source", official_url)
             if chunks:
-                with st.expander(t(lang, "read_full_act_text"), expanded=False):
-                    for chunk in chunks:
-                        section = chunk.get("section_number")
-                        page = chunk.get("page_number")
-                        heading = []
-                        if section and section != "unknown":
-                            heading.append(f"{t(lang, 'section')} {section}")
-                        if page:
-                            heading.append(f"{t(lang, 'page')} {page}")
-                        if heading:
-                            st.caption(" · ".join(heading))
-                        st.write(chunk.get("text") or "")
+                st.markdown("#### Full Act Text")
+                for chunk in chunks:
+                    section = chunk.get("section_number")
+                    page = chunk.get("page_number")
+                    heading = []
+                    if section and section != "unknown":
+                        heading.append(f"{t(lang, 'section')} {section}")
+                    if page:
+                        heading.append(f"{t(lang, 'page')} {page}")
+                    if heading:
+                        st.caption(" · ".join(heading))
+                    st.write(chunk.get("text") or "")
 
 
 def localized_verification_status(lang: str, status: str) -> str:
@@ -744,34 +766,14 @@ def page_chat(lang: str, db: Database, rag: NyayMitraRAG) -> None:
 def page_laws(lang: str, searcher: LegalSearch) -> None:
     laws_uri = "data:image/jpeg;base64," + base64.b64encode(LAWS_IMAGE.read_bytes()).decode("ascii") if LAWS_IMAGE.exists() else ""
     st.markdown(f'<div class="module-banner"><h1>{t(lang, "laws_title")}</h1><img src="{laws_uri}" alt="Bengaluru High Court" /></div>' if laws_uri else f'<div class="module-banner"><h1>{t(lang, "laws_title")}</h1></div>', unsafe_allow_html=True)
-    pending = (st.session_state.get("laws_query") or "").strip()
-    if pending:
-        st.session_state["act_search_input"] = pending
-    mode_labels = {"name": t(lang, "act_name_option"), "number": t(lang, "act_number_option")}
-    mode_keys = list(mode_labels)
-    mode_default = st.session_state.get("laws_search_mode", "name")
-    if mode_default not in mode_keys:
-        mode_default = "name"
-    st.caption(t(lang, "act_search_mode"))
-    chosen_mode = button_choices(
-        [(key, mode_labels[key]) for key in mode_keys], mode_default,
-        "laws_search_mode_widget", horizontal=True,
+    st.markdown('<h2 class="centered-section-title">Browse All Laws</h2>', unsafe_allow_html=True)
+    st.caption("Search Acts by title or Act number. Select a law to expand its PDF and extracted text.")
+    query = st.text_input(
+        "Search laws",
+        placeholder="Enter an Act name or Act number",
+        key="laws_indexed_pdf_search",
     )
-    st.session_state.laws_search_mode = chosen_mode
-    query = st.text_input(t(lang, "act_search"), placeholder=t(lang, "act_search_placeholder"), key="act_search_input")
-    if pending:
-        st.session_state.laws_query = ""
-
-    st.caption(t(lang, "official_law_sources_note"))
-    india_link, gazette_link = st.columns(2)
-    india_code_url = "https://www.indiacode.nic.in/"
-    if query.strip():
-        india_code_url = "https://www.indiacode.nic.in/handle/123456789/1359/simple-search?query=" + quote_plus(query.strip())
-    india_link.link_button(t(lang, "india_code_search"), india_code_url, use_container_width=True)
-    gazette_link.link_button(t(lang, "gazette_link"), "https://egazette.gov.in/", use_container_width=True)
-
-    st.subheader(t(lang, "all_available_laws"))
-    render_pdf_law_library(lang, searcher.db, "laws", query, chosen_mode)
+    render_pdf_law_library(lang, searcher.db, query)
 
 
 def page_quiz(lang: str, quiz: QuizService) -> None:
@@ -940,7 +942,11 @@ def page_admin_portal(lang: str, auth_db: Database) -> None:
             clean_username = username.strip()
             account = get_admin_account(auth_db, clean_username)
             configured_username = (config.ADMIN_USERNAME or "admin").strip()
-            if clean_username.casefold() == configured_username.casefold() and authenticate(auth_db, clean_username, password):
+            if not config.ADMIN_PASSWORD:
+                st.error(
+                    "Admin login is not configured. Set ADMIN_USERNAME and ADMIN_PASSWORD in the app's Secrets, then restart it."
+                )
+            elif clean_username.casefold() == configured_username.casefold() and authenticate(auth_db, clean_username, password):
                 stored_hash = auth_db.get_admin_hash(clean_username) or hash_password(password)
                 if account:
                     sync_admin_account(auth_db, clean_username, stored_hash)
@@ -951,7 +957,7 @@ def page_admin_portal(lang: str, auth_db: Database) -> None:
                 establish_account_session(user_id, clean_username, True)
                 st.rerun()
             else:
-                st.error(t(lang, "admin_login_failed"))
+                st.error("The username or password is incorrect.")
 
 
 def page_admin(lang: str, db: Database, processor: DocumentProcessor, rag: NyayMitraRAG) -> None:
