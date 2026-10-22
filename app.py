@@ -169,6 +169,12 @@ div[data-testid="stImage"] img{display:block;width:100%;object-fit:cover;border-
 .law-news-card{background:#fff;border:1px solid var(--line);border-radius:15px;padding:18px;min-height:135px;box-shadow:var(--shadow)}
 .law-news-card h3{font-size:17px;line-height:1.4;margin:4px 0 8px;color:var(--navy)}
 .law-news-card p{font-size:13px;color:var(--muted);margin:0}
+.acts-directory{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:14px 0 22px}
+.act-directory-card{display:block;min-height:126px;padding:16px 18px;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 2px 8px rgba(22,38,58,.04);text-decoration:none!important;color:var(--navy)!important;transition:transform .15s ease,border-color .15s ease,box-shadow .15s ease}
+.act-directory-card:hover{transform:translateY(-2px);border-color:#d99aa5;box-shadow:var(--shadow)}
+.act-directory-card h3{margin:5px 0 12px;font-size:15px;line-height:1.45;color:var(--navy)}
+.act-directory-meta{display:flex;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:12px}
+.act-directory-meta span{padding:3px 8px;background:#f4f6f8;border:1px solid var(--line);border-radius:999px}
 .law-year-heading{font-size:20px;font-weight:750;color:var(--navy);margin:20px 0 10px;padding-bottom:8px;border-bottom:1px solid var(--line)}
 .rail-card div[data-testid="stButton"]>button{min-height:52px;text-align:left;white-space:normal;line-height:1.3;background:#fffafa}
 [data-testid="stChatInput"]>div{border-radius:999px!important;background:#fff}
@@ -176,7 +182,7 @@ div[data-testid="stImage"] img{display:block;width:100%;object-fit:cover;border-
 footer{visibility:hidden}
 @media(max-width:1100px){.block-container{padding-left:.7rem;padding-right:.7rem}.chat-heading{align-items:flex-start;flex-direction:column}.chat-status{width:100%}}
 @media(max-width:1000px){.block-container{padding-left:1rem;padding-right:1rem}div[data-testid="stHorizontalBlock"]{flex-wrap:wrap!important}div[data-testid="stHorizontalBlock"]>div[data-testid="column"]{min-width:min(100%,620px)!important;width:100%!important;flex:1 1 100%!important}.module-banner{grid-template-columns:1fr}.module-banner img{height:190px}}
-@media(max-width:760px){[data-testid="stSidebar"]{width:min(84vw,280px)!important;min-width:min(84vw,280px)!important;max-width:min(84vw,280px)!important}.brand-name{font-size:21px}.block-container{padding:.5rem .55rem 1rem}.chat-surface{padding:10px;min-height:0}.panel{padding:14px}.chat-heading h1{font-size:22px}.home-hero-image img{height:240px}}
+@media(max-width:760px){[data-testid="stSidebar"]{width:min(84vw,280px)!important;min-width:min(84vw,280px)!important;max-width:min(84vw,280px)!important}.brand-name{font-size:21px}.block-container{padding:.5rem .55rem 1rem}.chat-surface{padding:10px;min-height:0}.panel{padding:14px}.chat-heading h1{font-size:22px}.home-hero-image img{height:240px}.acts-directory{grid-template-columns:1fr}}
 @media(max-height:820px){.block-container{padding-top:.8rem}}
 button:focus,input:focus,textarea:focus,select:focus{outline:2px solid var(--red)!important;outline-offset:2px}
 </style>
@@ -243,13 +249,14 @@ def header(lang: str) -> None:
     admin_portal = st.session_state.get("page") == "admin_portal"
     h1, h2, h3 = st.columns([2.1, 5.0, 1.1], vertical_alignment="center")
     with h1:
-        logo_uri = "data:image/png;base64," + base64.b64encode(LOGO_IMAGE.read_bytes()).decode("ascii") if LOGO_IMAGE.exists() else ""
-        brand_class = "brand brand-centered" if admin_portal else "brand"
-        st.markdown(
-            f'<div class="{brand_class}"><img class="brand-mark" src="{logo_uri}" alt="Nyaya Mitra logo"><div><div class="brand-name">Nyaya <span>Mitra</span></div>'
-            f'<div class="brand-sub">{t(lang, "brand_sub")}</div></div></div>',
-            unsafe_allow_html=True,
-        )
+        with st.container(border=True):
+            logo_col, name_col = st.columns([.34, 1.66], vertical_alignment="center")
+            if LOGO_IMAGE.exists():
+                logo_col.image(str(LOGO_IMAGE), width=44)
+            name_col.markdown(
+                f'<div class="brand-name">Nyaya <span>Mitra</span></div><div class="brand-sub">{t(lang, "brand_sub")}</div>',
+                unsafe_allow_html=True,
+            )
     if not admin_portal:
         with h2:
             with st.form("global_search", clear_on_submit=False):
@@ -354,6 +361,59 @@ def page_home(lang: str, db: Database, searcher: LegalSearch) -> None:
                             key=f"home_download_pdf_{doc['id']}",
                             use_container_width=True,
                         )
+    render_central_acts_directory(lang, "home")
+
+
+def render_central_acts_directory(lang: str, key_prefix: str) -> None:
+    catalog_data = load_json(CENTRAL_ACTS_CATALOG_PATH)
+    catalog_entries = catalog_data.get("entries", []) if isinstance(catalog_data, dict) else []
+    st.subheader(t(lang, "central_catalog_title"))
+    st.caption(t(lang, "central_catalog_note"))
+    catalog_search = st.text_input(
+        t(lang, "central_catalog_filter"),
+        key=f"{key_prefix}_central_catalog_search",
+    )
+    search = catalog_search.strip().casefold()
+    year_options = sorted({int(row["year"]) for row in catalog_entries if str(row.get("year", "")).isdigit()}, reverse=True)
+    selected_year = st.selectbox(
+        t(lang, "central_catalog_year"),
+        [None, *year_options],
+        format_func=lambda year: t(lang, "central_catalog_year_all") if year is None else str(year),
+        key=f"{key_prefix}_central_catalog_year",
+    )
+    filtered = [
+        row for row in catalog_entries
+        if (not search or any(search in str(row.get(field, "")).casefold() for field in ("act_name", "act_number", "year")))
+        and (selected_year is None or int(row.get("year", 0)) == selected_year)
+    ]
+    source_published = catalog_data.get("source_published", "unknown") if isinstance(catalog_data, dict) else "unknown"
+    st.caption(f"{len(filtered):,} / {len(catalog_entries):,} {t(lang, 'central_catalog_results')} · Source list: {source_published}")
+    if filtered:
+        act_cards = ['<div class="acts-directory">']
+        for row in filtered:
+            act_name = escape(str(row.get("act_name", "")))
+            year = escape(str(row.get("year", "—")))
+            act_number = escape(str(row.get("act_number", "—")))
+            entry = escape(str(row.get("serial", "")))
+            act_url = "https://www.indiacode.nic.in/handle/123456789/1359/simple-search?query=" + quote_plus(str(row.get("act_name", "")))
+            act_cards.append(
+                f'<a class="act-directory-card" href="{escape(act_url, quote=True)}" target="_blank" rel="noopener noreferrer">'
+                f'<div class="kicker">{t(lang, "central_catalog_serial")} {entry}</div><h3>{act_name}</h3>'
+                f'<div class="act-directory-meta"><span>{t(lang, "central_catalog_year_label")}: {year}</span>'
+                f'<span>{t(lang, "central_catalog_number")}: {act_number}</span></div></a>'
+            )
+        act_cards.append("</div>")
+        st.markdown("".join(act_cards), unsafe_allow_html=True)
+    source_pdf_path = Path(__file__).resolve().parent / "data" / "central_acts_alphabetical_2025.pdf"
+    if source_pdf_path.is_file():
+        st.download_button(
+            t(lang, "central_catalog_original_pdf"),
+            data=source_pdf_path.read_bytes(),
+            file_name=source_pdf_path.name,
+            mime="application/pdf",
+            key=f"{key_prefix}_central_acts_source_pdf",
+        )
+    st.caption(f"{t(lang, 'central_catalog_publisher')}: {catalog_data.get('publisher', 'Legislative Department, Government of India') if isinstance(catalog_data, dict) else 'Legislative Department, Government of India'}")
 
 
 def localized_verification_status(lang: str, status: str) -> str:
@@ -540,64 +600,7 @@ def page_laws(lang: str, searcher: LegalSearch) -> None:
     india_link.link_button(t(lang, "india_code_search"), india_code_url, use_container_width=True)
     gazette_link.link_button(t(lang, "gazette_link"), "https://egazette.gov.in/", use_container_width=True)
 
-    catalog_data = load_json(CENTRAL_ACTS_CATALOG_PATH)
-    catalog_entries = catalog_data.get("entries", []) if isinstance(catalog_data, dict) else []
-    st.subheader(t(lang, "central_catalog_title"))
-    st.caption(t(lang, "central_catalog_note"))
-    catalog_search = st.text_input(
-        t(lang, "central_catalog_filter"),
-        value=query.strip(),
-        key="central_catalog_search_input",
-    )
-    catalog_query = catalog_search.strip().casefold()
-    year_options = sorted({int(row["year"]) for row in catalog_entries if str(row.get("year", "")).isdigit()}, reverse=True)
-    selected_year = st.selectbox(
-        t(lang, "central_catalog_year"),
-        [None, *year_options],
-        format_func=lambda year: t(lang, "central_catalog_year_all") if year is None else str(year),
-        key="central_catalog_year_filter",
-    )
-    catalog_rows = [
-        row for row in catalog_entries
-        if not catalog_query or any(
-            catalog_query in str(row.get(field, "")).casefold()
-            for field in ("act_name", "act_number", "year")
-        )
-    ]
-    if selected_year is not None:
-        catalog_rows = [row for row in catalog_rows if int(row.get("year", 0)) == selected_year]
-    st.caption(f"{len(catalog_rows):,} / {len(catalog_entries):,} {t(lang, 'central_catalog_results')} · Source list: {catalog_data.get('source_published', 'unknown') if isinstance(catalog_data, dict) else 'unavailable'}")
-    if catalog_rows:
-        st.dataframe(
-            [{"Act": row["act_name"], "Year": row["year"], "Act number": row["act_number"]} for row in catalog_rows],
-            hide_index=True,
-            use_container_width=True,
-            height=440,
-        )
-        selected_act = st.selectbox(
-            t(lang, "india_code_full_text"),
-            catalog_rows,
-            format_func=lambda row: f"{row['act_name']} · {row['year']} · Act {row['act_number']}",
-            key="official_central_act_selected",
-        )
-        official_act_url = "https://www.indiacode.nic.in/handle/123456789/1359/simple-search?query=" + quote_plus(selected_act["act_name"])
-        st.markdown(f"#### {t(lang, 'central_catalog_details')}")
-        detail_col1, detail_col2, detail_col3 = st.columns(3)
-        detail_col1.metric(t(lang, "central_catalog_year_label"), selected_act["year"])
-        detail_col2.metric(t(lang, "central_catalog_number"), selected_act["act_number"])
-        detail_col3.metric(t(lang, "central_catalog_serial"), selected_act["serial"])
-        st.markdown(f"**{selected_act['act_name']}**")
-        st.caption(f"{t(lang, 'central_catalog_publisher')}: {catalog_data.get('publisher', 'Legislative Department, Government of India')}")
-        st.link_button(t(lang, "india_code_full_text"), official_act_url)
-    source_pdf_path = Path(__file__).resolve().parent / "data" / "central_acts_alphabetical_2025.pdf"
-    if source_pdf_path.is_file():
-        st.download_button(
-            t(lang, "central_catalog_original_pdf"),
-            data=source_pdf_path.read_bytes(),
-            file_name=source_pdf_path.name,
-            mime="application/pdf",
-            key="central_acts_source_pdf_download",
-        )
+    render_central_acts_directory(lang, "laws")
     portal_col, states_col = st.columns(2)
     portal_col.link_button(t(lang, "india_code_portal"), "https://www.indiacode.nic.in/", use_container_width=True)
     states_col.link_button(t(lang, "state_acts_portal"), "https://www.indiacode.nic.in/", use_container_width=True)
