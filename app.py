@@ -12,7 +12,7 @@ from typing import Any
 import streamlit as st
 
 import config
-from auth import authenticate, bootstrap_admin, hash_password
+from auth import bootstrap_admin, hash_password, safe_compare
 from config import DB_PATH, KB_SEED_PATH, QUIZ_SEED_PATH, openai_configured
 from database import Database
 from document_processor import DocumentProcessingError, DocumentProcessor, sha256_bytes
@@ -56,37 +56,98 @@ def load_json(path: Path) -> list:
 
 
 def seed_bundled_pdfs(db: Database, uploads_dir: Path) -> None:
-    """Index PDFs shipped in uploads/ once, copying them into persistent storage."""
-    known_acts = (
-        ("1709101314", "The Protection of Children from Sexual Offences Act, 2012"),
-        ("1710219616", "The Protection of Women from Domestic Violence Act, 2005"),
-        ("a202345", "The Bharatiya Nyaya Sanhita, 2023"),
-        ("cp act 2019", "The Consumer Protection Act, 2019"),
-        ("it_act_2000", "The Information Technology Act, 2000"),
-    )
+    """Index the official Act PDFs bundled with the app for every user profile."""
+    act_by_filename = {
+        "0ae7f82ab5b7_CP_Act_2019_1732700731.pdf": "The Consumer Protection Act, 2019",
+        "0b305c1ed9b5_1709101314.pdf": "The Protection of Children from Sexual Offences Act, 2012",
+        "e6688c668ee1_1710219616.pdf": "The Protection of Women from Domestic Violence Act, 2005",
+        "e71725fa32e8_it_act_2000_updated.pdf": "The Information Technology Act, 2000",
+        "ff92dcc72778_a202345.pdf": "The Bharatiya Nyaya Sanhita, 2023",
+        "A187209.pdf": "The Indian Contract Act, 1872",
+        "a1908-05.pdf": "The Code of Civil Procedure, 1908",
+        "A1963-36.pdf": "The Limitation Act, 1963",
+        "a1989-33.pdf": "The Scheduled Castes and the Scheduled Tribes (Prevention of Atrocities) Act, 1989",
+        "A2000-21.pdf": "The Information Technology Act, 2000",
+        "A2005-22.pdf": "The Right to Information Act, 2005",
+        "A2012-32.pdf": "The Protection of Children from Sexual Offences Act, 2012",
+        "A2023-46.pdf": "The Bharatiya Nagarik Suraksha Sanhita, 2023",
+        "a2023-47.pdf": "The Bharatiya Sakshya Adhiniyam, 2023",
+    }
+    official_sources = {
+        "A187209.pdf": "https://www.indiacode.nic.in/bitstream/123456789/2187/2/A187209.pdf",
+        "a1908-05.pdf": "https://www.indiacode.nic.in/indiacode/bitstream/123456789/2191/1/aA1908-05.pdf",
+        "A1963-36.pdf": "https://www.indiacode.nic.in/bitstream/123456789/1565/5/A1963-36.pdf",
+        "a1989-33.pdf": "https://www.indiacode.nic.in/bitstream/123456789/1920/1/aA1989-33.pdf",
+        "A2000-21.pdf": "https://www.indiacode.nic.in/bitstream/123456789/13116/1/it_act_2000_updated.pdf",
+        "A2005-22.pdf": "https://www.indiacode.nic.in/bitstream/123456789/2065/1/aa2005.pdf",
+        "A2012-32.pdf": "https://www.indiacode.nic.in/handle/123456789/2079?view_type=browse",
+        "A2023-46.pdf": "https://www.indiacode.nic.in/bitstream/123456789/21920/1/the_bharatiya_nagarik_suraksha_sanhita%2C_2023.pdf",
+        "a2023-47.pdf": "https://www.indiacode.nic.in/bitstream/123456789/20063/1/aa202347.pdf",
+        "0ae7f82ab5b7_CP_Act_2019_1732700731.pdf": "https://www.indiacode.nic.in/",
+        "0b305c1ed9b5_1709101314.pdf": "https://www.indiacode.nic.in/",
+        "e6688c668ee1_1710219616.pdf": "https://www.indiacode.nic.in/",
+        "e71725fa32e8_it_act_2000_updated.pdf": "https://www.indiacode.nic.in/",
+        "ff92dcc72778_a202345.pdf": "https://www.indiacode.nic.in/",
+    }
+    version_by_filename = {
+        "a1908-05.pdf": "As on 10 January 2026",
+        "a1989-33.pdf": "As on 21 September 2025",
+        "A2000-21.pdf": "As on 27 June 2025",
+        "A2005-22.pdf": "As on 18 November 2025",
+        "A2012-32.pdf": "As on 1 July 2026",
+        "A2023-46.pdf": "As on 6 October 2025",
+        "a2023-47.pdf": "As on 6 October 2025",
+    }
     processor = DocumentProcessor(db, uploads_dir)
     bundled_uploads = Path(__file__).resolve().parent / "uploads"
-    bundled_filenames = {
-        "0ae7f82ab5b7_CP_Act_2019_1732700731.pdf",
-        "0b305c1ed9b5_1709101314.pdf",
-        "e6688c668ee1_1710219616.pdf",
-        "e71725fa32e8_it_act_2000_updated.pdf",
-        "ff92dcc72778_a202345.pdf",
+    bundled_filenames = set(act_by_filename)
+    # Replace only the app's previous bundled copy when a newer supplied PDF exists.
+    bundled_replacements = {
+        "A2000-21.pdf": "e71725fa32e8_it_act_2000_updated.pdf",
+        "A2012-32.pdf": "0b305c1ed9b5_1709101314.pdf",
     }
+    active_docs = db.list_documents(active_only=True)
     for pdf_path in sorted(bundled_uploads.glob("*.pdf")):
         if pdf_path.name not in bundled_filenames:
+            continue
+        if pdf_path.name in set(bundled_replacements.values()) and any(
+            (bundled_uploads / new_name).is_file()
+            for new_name, old_name in bundled_replacements.items()
+            if old_name == pdf_path.name
+        ):
             continue
         try:
             data = pdf_path.read_bytes()
             if db.find_document_by_hash(sha256_bytes(data)):
                 continue
-            file_stem = pdf_path.stem
-            act_name = next((name for marker, name in known_acts if marker in file_stem.lower()), file_stem)
-            processor.ingest(filename=pdf_path.name, data=data, act_name=act_name)
+            replacement_name = bundled_replacements.get(pdf_path.name)
+            replacement_doc = next(
+                (doc for doc in active_docs if doc.get("original_filename") == replacement_name),
+                None,
+            ) if replacement_name else None
+            if replacement_doc is None:
+                normalized_act_name = re.sub(r"^the\s+", "", act_by_filename[pdf_path.name].strip().casefold())
+                replacement_doc = next(
+                    (
+                        doc for doc in active_docs
+                        if re.sub(r"^the\s+", "", str(doc.get("act_name") or "").strip().casefold()) == normalized_act_name
+                        and str(doc.get("original_filename") or "").lower().endswith(".pdf")
+                    ),
+                    None,
+                )
+            record = processor.ingest(
+                filename=pdf_path.name,
+                data=data,
+                act_name=act_by_filename[pdf_path.name],
+                source_url=official_sources[pdf_path.name],
+                version_or_date=version_by_filename.get(pdf_path.name, "Official India Code PDF"),
+                document_id=str(replacement_doc["id"]) if replacement_doc else None,
+            )
+            active_docs = [doc for doc in active_docs if str(doc.get("id")) != str(record["id"])]
+            active_docs.append(record)
             logger.info("Indexed bundled law PDF %s", pdf_path.name)
         except (OSError, DocumentProcessingError):
             logger.exception("Could not index bundled law PDF %s", pdf_path.name)
-
 
 @st.cache_resource
 def get_auth_db() -> Database:
@@ -950,7 +1011,10 @@ def page_admin_portal(lang: str, auth_db: Database) -> None:
                 # so changed deployment secrets could leave an old hash in memory.
                 bootstrap_admin(auth_db)
                 account = get_admin_account(auth_db, clean_username)
-                if authenticate(auth_db, clean_username, password):
+                # The configured secret is authoritative; the database hash is kept
+                # in sync for account records, but a stale hash must not lock out the owner.
+                password_matches = safe_compare(password, config.ADMIN_PASSWORD)
+                if password_matches:
                     stored_hash = auth_db.get_admin_hash(clean_username) or hash_password(password)
                     if account:
                         sync_admin_account(auth_db, clean_username, stored_hash)
