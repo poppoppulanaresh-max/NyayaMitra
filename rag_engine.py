@@ -105,6 +105,52 @@ class NyayMitraRAG:
             )
         )
 
+    @staticmethod
+    def _is_educational_sample(item: dict[str, Any]) -> bool:
+        status = str(item.get("verification_status") or "").casefold()
+        name = str(item.get("act_name") or "").casefold()
+        source = str(item.get("source_url") or item.get("source") or "").casefold()
+        return (
+            status in {"educational_sample", "educational_sample_not_official"}
+            or "educational citizen guidance" in name
+            or "starter educational" in name
+            or "educational sample" in source
+        )
+
+    @staticmethod
+    def _query_act_hint(query: str) -> str:
+        q = query.casefold()
+        if any(term in q for term in (
+            "indian contract act", "contract act", "भारतीय संविदा अधिनियम", "भारतीय अनुबंध अधिनियम",
+            "భారతీయ ఒప్పందాల చట్టం", "భారత ఒప్పందాల చట్టం",
+        )):
+            return "contract"
+        if any(term in q for term in (
+            "information technology act", "it act", "सूचना प्रौद्योगिकी अधिनियम",
+            "సమాచార సాంకేతిక చట్టం", "సమాచార సాంకేతికత చట్టం",
+        )):
+            return "it"
+        if any(term in q for term in (
+            "first information report", "fir", "एफआईआर", "प्राथमिकी", "ఎఫ్‌ఐఆర్", "ఎఫ్ఐఆర్",
+        )):
+            if "crpc" in q or "code of criminal procedure" in q or "दंड प्रक्रिया संहिता" in q:
+                return "crpc"
+            return "bnss"
+        return ""
+
+    @staticmethod
+    def _expanded_query(query: str, act_hint: str) -> str:
+        """Add a small bilingual legal vocabulary for English-language PDFs."""
+        if act_hint == "contract":
+            return query + " Indian Contract Act contract agreement offer acceptance consideration capacity consent lawful object"
+        if act_hint == "it":
+            return query + " Information Technology Act identity theft 66C impersonation computer resource electronic signature"
+        if act_hint == "bnss":
+            return query + " Bharatiya Nagarik Suraksha Sanhita section 173 information cognizable offence police station electronic communication"
+        if act_hint == "crpc":
+            return query + " Code of Criminal Procedure section 154 information cognizable offence first information report"
+        return query
+
     def _build_index(self) -> None:
         self.index = None
         if not self.items or faiss is None:
@@ -123,11 +169,18 @@ class NyayMitraRAG:
         self.index = faiss.IndexFlatIP(int(vectors.shape[1]))
         self.index.add(vectors)
 
-    def _keyword_search(self, query: str, top_k: int) -> list[dict[str, Any]]:
+    def _keyword_search(
+        self,
+        query: str,
+        top_k: int,
+        items: list[dict[str, Any]] | None = None,
+        min_score: float = 0.34,
+    ) -> list[dict[str, Any]]:
         stop_words = {
             "a", "an", "and", "are", "about", "by", "does", "for", "from", "how", "in",
             "is", "it", "of", "on", "or", "say", "the", "to", "what", "when", "where",
             "which", "who", "why", "with", "would", "could", "should", "please", "tell",
+            "act", "law", "section", "sections", "important", "main", "provisions",
         }
         terms = [
             token for token in re.findall(r"[^\W_]+", query.lower(), flags=re.UNICODE)
@@ -136,7 +189,7 @@ class NyayMitraRAG:
         if not terms:
             return []
         scored = []
-        for x in self.items:
+        for x in (items if items is not None else self.items):
             candidate_terms = terms
             if str(x.get("language") or "en").lower().startswith("en"):
                 # Do not dilute a supported English phrase with unmatched
@@ -151,7 +204,7 @@ class NyayMitraRAG:
             score = matched / len(set(candidate_terms))
             # Require meaningful query coverage so a shared article or stop word
             # cannot turn an unrelated legal question into evidence.
-            if matched and score >= 0.34:
+            if matched and score >= min_score:
                 y = dict(x)
                 y["score"] = float(score)
                 y["score_type"] = "keyword_overlap"
@@ -180,6 +233,33 @@ class NyayMitraRAG:
         query = (query or "").strip()[:MAX_QUERY_CHARS]
         if not query or not self.items:
             return []
+        # Educational starter text is useful for quizzes, but is not a statute
+        # and must never be cited as legal evidence.
+        legal_items = [item for item in self.items if not self._is_educational_sample(item)]
+        if not legal_items:
+            return []
+        act_hint = self._query_act_hint(query)
+
+        # FIR has a specific current provision in BNSS section 173. Prefer its
+        # text directly so generic words cannot retrieve unrelated Acts.
+        if act_hint == "bnss":
+            fir_sources = []
+            for item in legal_items:
+                act = str(item.get("act_name") or "").casefold()
+                text = str(item.get("text") or "").casefold()
+                if "bharatiya nagarik suraksha" not in act:
+                    continue
+                if re.search(r"\b173\b", text) and any(
+                    phrase in text for phrase in ("cognizable", "cognisable", "first information", "information in")
+                ):
+                    row = dict(item)
+                    if str(row.get("section_number") or "unknown").casefold() == "unknown":
+                        row["section_number"] = "173"
+                    row["score"] = 1.0
+                    row["score_type"] = "targeted_statutory_section"
+                    fir_sources.append(self._public_source(row))
+            if fir_sources:
+                return fir_sources[:top_k]
         # Explicit constitutional citations should outrank unrelated chunks
         # that happen to share words with a long pasted excerpt.
         article_match = re.search(r"\b(?:article|art\.)\s*(\d+[A-Z]?)", query, re.IGNORECASE)
@@ -197,8 +277,13 @@ class NyayMitraRAG:
                     exact_article.append(self._public_source(row))
             if exact_article:
                 return exact_article[:top_k]
-        semantic = self._semantic_search(query, top_k)
-        keyword = self._keyword_search(query, top_k)
+        search_query = self._expanded_query(query, act_hint)
+        # Search broadly before filtering so seed examples cannot occupy the
+        # result limit and crowd out actual Acts.
+        semantic = self._semantic_search(search_query, len(self.items))
+        keyword = self._keyword_search(
+            search_query, len(self.items), legal_items, min_score=0.2 if act_hint else 0.34
+        )
         merged: dict[str, dict[str, Any]] = {}
         for row in keyword + semantic:
             key = str(row.get("chunk_key") or row.get("id"))
@@ -208,11 +293,23 @@ class NyayMitraRAG:
         ranked = sorted(merged.values(), key=lambda z: float(z.get("score") or 0), reverse=True)
         filtered = []
         for row in ranked:
+            if self._is_educational_sample(row):
+                continue
+            if act_hint:
+                act_name = str(row.get("act_name") or "").casefold()
+                if act_hint == "contract" and "contract" not in act_name:
+                    continue
+                if act_hint == "it" and not any(term in act_name for term in ("information technology", "it act")):
+                    continue
+                if act_hint == "bnss" and "bharatiya nagarik suraksha" not in act_name:
+                    continue
+                if act_hint == "crpc" and not any(term in act_name for term in ("criminal procedure", "crpc")):
+                    continue
             stype = row.get("score_type")
             score = float(row.get("score") or 0)
             if stype == "cosine_similarity" and score < RELEVANCE_THRESHOLD:
                 continue
-            if stype == "keyword_overlap" and score < 0.34:
+            if stype == "keyword_overlap" and score < (0.2 if act_hint else 0.34):
                 continue
             filtered.append(self._public_source(row))
         return filtered[:top_k]
