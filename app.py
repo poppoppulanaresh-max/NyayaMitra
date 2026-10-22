@@ -787,7 +787,7 @@ def page_quiz(lang: str, quiz: QuizService) -> None:
     doc_ids = list(doc_by_id)
     selected_id = st.selectbox(
         t(lang, "quiz_select_act"), doc_ids,
-        format_func=lambda value: doc_by_id[value].get("act_name") or value,
+        format_func=lambda value: display_act_title(doc_by_id[value].get("act_name") or value),
         key="quiz_document_select",
     )
     selected_doc = doc_by_id[selected_id]
@@ -972,25 +972,28 @@ def page_admin(lang: str, db: Database, processor: DocumentProcessor, rag: NyayM
     if not docs:
         st.info(t(lang, "no_documents"))
     for doc in docs:
-        with st.expander(f"{doc.get('act_name')} — {doc.get('original_filename')}"):
-            st.json(
-                {
-                    "id": doc.get("id"),
-                    "original_filename": doc.get("original_filename"),
-                    "act_name": doc.get("act_name"),
-                    "source_url": doc.get("source_url"),
-                    "language": doc.get("language"),
-                    "version_or_date": doc.get("version_or_date"),
-                    "upload_date": doc.get("upload_date"),
-                    "file_hash": doc.get("file_hash"),
-                    "extraction_status": doc.get("extraction_status"),
-                    "verification_status": doc.get("verification_status"),
-                    "indexing_status": doc.get("indexing_status"),
-                    "processing_error": doc.get("processing_error"),
-                    "page_count": doc.get("page_count"),
-                    "chunk_count": doc.get("chunk_count"),
-                }
-            )
+        with st.expander(
+            f"{display_act_title(doc.get('act_name'))} — {display_act_title(doc.get('original_filename'))}"
+        ):
+            metadata = {
+                "ID": doc.get("id"),
+                "Original Filename": doc.get("original_filename"),
+                "Act Name": display_act_title(doc.get("act_name")),
+                "Source URL": doc.get("source_url"),
+                "Language": doc.get("language"),
+                "Version or Date": doc.get("version_or_date"),
+                "Upload Date": doc.get("upload_date"),
+                "File Hash": doc.get("file_hash"),
+                "Extraction Status": doc.get("extraction_status"),
+                "Verification Status": localized_verification_status(
+                    lang, str(doc.get("verification_status") or "unverified_upload")
+                ),
+                "Indexing Status": display_act_title(doc.get("indexing_status")),
+                "Processing Error": doc.get("processing_error"),
+                "Page Count": doc.get("page_count"),
+                "Chunk Count": doc.get("chunk_count"),
+            }
+            st.json(metadata)
             b1, b2 = st.columns(2)
             if b1.button(t(lang, "reprocess"), key=f"re_{doc['id']}"):
                 try:
@@ -1072,7 +1075,7 @@ def upload_form(lang: str, processor: DocumentProcessor) -> None:
             t(lang, "filter_document"),
             doc_ids,
             format_func=lambda value: next(
-                (f"{doc.get('act_name')} · {doc.get('original_filename')}" for doc in existing_docs if str(doc["id"]) == value),
+                (f"{display_act_title(doc.get('act_name'))} · {display_act_title(doc.get('original_filename'))}" for doc in existing_docs if str(doc["id"]) == value),
                 value,
             ),
             key="pdf_update_document_id",
