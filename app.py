@@ -940,22 +940,28 @@ def page_admin_portal(lang: str, auth_db: Database) -> None:
             submitted = st.form_submit_button(t(lang, "admin_portal_access"), type="primary", use_container_width=True)
         if submitted:
             clean_username = username.strip()
-            account = get_admin_account(auth_db, clean_username)
             configured_username = (config.ADMIN_USERNAME or "admin").strip()
             if not config.ADMIN_PASSWORD:
                 st.error(
                     "Admin login is not configured. Set ADMIN_USERNAME and ADMIN_PASSWORD in the app's Secrets, then restart it."
                 )
-            elif clean_username.casefold() == configured_username.casefold() and authenticate(auth_db, clean_username, password):
-                stored_hash = auth_db.get_admin_hash(clean_username) or hash_password(password)
-                if account:
-                    sync_admin_account(auth_db, clean_username, stored_hash)
-                    user_id = str(account["user_id"])
+            elif clean_username.casefold() == configured_username.casefold():
+                # Refresh this hash on login: get_auth_db is cached by Streamlit,
+                # so changed deployment secrets could leave an old hash in memory.
+                bootstrap_admin(auth_db)
+                account = get_admin_account(auth_db, clean_username)
+                if authenticate(auth_db, clean_username, password):
+                    stored_hash = auth_db.get_admin_hash(clean_username) or hash_password(password)
+                    if account:
+                        sync_admin_account(auth_db, clean_username, stored_hash)
+                        user_id = str(account["user_id"])
+                    else:
+                        user_id = uuid.uuid4().hex
+                        create_admin_account(auth_db, user_id, clean_username, stored_hash)
+                    establish_account_session(user_id, clean_username, True)
+                    st.rerun()
                 else:
-                    user_id = uuid.uuid4().hex
-                    create_admin_account(auth_db, user_id, clean_username, stored_hash)
-                establish_account_session(user_id, clean_username, True)
-                st.rerun()
+                    st.error("The username or password is incorrect.")
             else:
                 st.error("The username or password is incorrect.")
 
