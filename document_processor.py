@@ -182,12 +182,67 @@ class DocumentProcessor:
     ) -> dict[str, Any]:
         validate_upload(filename, data)
         digest = sha256_bytes(data)
-        existing = self.db.find_document_by_hash(digest)
-        if existing and not document_id:
-            raise DocumentProcessingError("This exact PDF has already been added to the knowledge base.", "duplicate")
+
+        existing_doc = self.db.get_document(document_id) if document_id else None
+        if document_id and not existing_doc:
+            raise DocumentProcessingError("The document to update was not found.", "missing")
+
+        existing_by_hash = self.db.find_document_by_hash(digest)
+        if existing_by_hash:
+            if not document_id:
+                raise DocumentProcessingError(
+                    "This exact PDF has already been added to the knowledge base.", "duplicate"
+                )
+            if str(existing_by_hash["id"]) != str(document_id):
+                raise DocumentProcessingError(
+                    "This exact PDF matches a different document already in the knowledge base.", "duplicate"
+                )
+
+        # Extract and validate text in-memory before modifying the database or disk.
+        # If extraction fails, any existing indexed document remains completely intact.
+        pages = extract_pages(data)
+        combined = "\n".join(t for _, t in pages).strip()
+        if len(combined) < MIN_EXTRACT_CHARS:
+            raise DocumentProcessingError(
+                "Very little text was extracted. This may be a scanned or image-only PDF. "
+                "OCR is not implemented in this application; provide a text-based PDF.",
+                "ocr_needed",
+            )
 
         doc_id = document_id or str(uuid.uuid4())
         stored_name = safe_filename(filename, digest)
+
+        resolved_act_name = (
+            (act_name or "").strip()
+            or (existing_doc.get("act_name") if existing_doc else "")
+            or Path(filename).stem
+        )
+        resolved_source_url = (
+            (source_url or "").strip()
+            or (existing_doc.get("source_url") if existing_doc else "")
+        )
+        resolved_version = (
+            (version_or_date or "").strip()
+            or (existing_doc.get("version_or_date") if existing_doc else "")
+        )
+        resolved_language = language or (existing_doc.get("language") if existing_doc else "en")
+        verification_status = (
+            existing_doc.get("verification_status") if existing_doc else "unverified_upload"
+        )
+
+        candidate_meta = {
+            "document_id": doc_id,
+            "act_name": resolved_act_name,
+            "source_url": resolved_source_url,
+            "language": resolved_language,
+            "verification_status": verification_status,
+        }
+
+        chunks = pages_to_chunks(pages, candidate_meta)
+        if not chunks:
+            raise DocumentProcessingError("No usable text chunks were produced.", "ocr_needed")
+
+        # Now that extraction and chunking succeeded, write the file to storage.
         dest = self.uploads_dir / stored_name
         dest.write_bytes(data)
 
@@ -196,58 +251,23 @@ class DocumentProcessor:
             "document_id": doc_id,
             "original_filename": Path(filename).name,
             "stored_filename": stored_name,
-            "act_name": (act_name or "").strip() or Path(filename).stem,
-            "source_url": (source_url or "").strip(),
-            "language": language or "en",
-            "version_or_date": (version_or_date or "").strip(),
+            "act_name": resolved_act_name,
+            "source_url": resolved_source_url,
+            "language": resolved_language,
+            "version_or_date": resolved_version,
             "upload_date": utc_now(),
             "file_hash": digest,
-            "extraction_status": "pending",
-            "verification_status": "unverified_upload",
-            "indexing_status": "pending",
+            "extraction_status": "ok",
+            "verification_status": verification_status,
+            "indexing_status": "indexed",
             "processing_error": None,
-            "page_count": 0,
-            "chunk_count": 0,
+            "page_count": len(pages),
+            "chunk_count": len(chunks),
             "active": 1,
         }
+
         self.db.upsert_document(record)
-
-        try:
-            pages = extract_pages(data)
-        except DocumentProcessingError as exc:
-            record["extraction_status"] = exc.code
-            record["indexing_status"] = "failed"
-            record["processing_error"] = str(exc)
-            self.db.upsert_document(record)
-            raise
-
-        combined = "\n".join(t for _, t in pages).strip()
-        if len(combined) < MIN_EXTRACT_CHARS:
-            record["extraction_status"] = "insufficient_text"
-            record["indexing_status"] = "failed"
-            record["page_count"] = len(pages)
-            record["processing_error"] = (
-                "Very little text was extracted. This may be a scanned or image-only PDF. "
-                "OCR is not implemented in this application; provide a text-based PDF."
-            )
-            self.db.upsert_document(record)
-            raise DocumentProcessingError(record["processing_error"], "ocr_needed")
-
-        chunks = pages_to_chunks(pages, record)
-        if not chunks:
-            record["extraction_status"] = "insufficient_text"
-            record["indexing_status"] = "failed"
-            record["processing_error"] = "No usable text chunks were produced."
-            self.db.upsert_document(record)
-            raise DocumentProcessingError(record["processing_error"], "ocr_needed")
-
         self.db.replace_chunks(doc_id, chunks)
-        record["extraction_status"] = "ok"
-        record["indexing_status"] = "indexed"
-        record["page_count"] = len(pages)
-        record["chunk_count"] = len(chunks)
-        record["processing_error"] = None
-        self.db.upsert_document(record)
         logger.info("Indexed document %s with %s chunks", doc_id, len(chunks))
         return record
 

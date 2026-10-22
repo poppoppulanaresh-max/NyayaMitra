@@ -115,48 +115,140 @@ class NyayMitraRAG:
             or "educational citizen guidance" in name
             or "starter educational" in name
             or "educational sample" in source
+            or "quiz" in name
+            or "quiz" in source
         )
 
     @staticmethod
-    def _query_act_hint(query: str) -> str:
+    def _matches_any_alias(query: str, aliases: tuple[str, ...]) -> bool:
         q = query.casefold()
-        if any(term in q for term in (
+        for alias in aliases:
+            a = alias.casefold()
+            if a.isascii() and len(a) <= 6:
+                if re.search(r"\b" + re.escape(a) + r"\b", q):
+                    return True
+            else:
+                if a in q:
+                    return True
+        return False
+
+    def _query_act_hint(self, query: str) -> str:
+        q = query.casefold()
+        if self._matches_any_alias(q, (
             "electronic records", "digital evidence", "electronic evidence",
-            "इलेक्ट्रॉनिक रिकॉर्ड", "डिजिटल साक्ष्य", "इलेक्ट्रॉनिक साक्ष्य",
-            "ఎలక్ట్రానిక్ రికార్డులు", "డిజిటల్ ఆధారాలు", "డిజిటల్ సాక్ష్యం", "ఎలక్ట్రానిక్ ఆధారాలు",
+            "bharatiya sakshya adhiniyam", "bsa", "indian evidence act", "section 63",
+            "इलेक्ट्रॉनिक रिकॉर्ड", "डिजिटल साक्ष्य", "इलेक्ट्रॉनिक साक्ष्य", "भारतीय साक्ष्य अधिनियम", "बीएसए",
+            "ఎలక్ట్రానిక్ రికార్డులు", "డిజిటల్ ఆధారాలు", "డిజిటల్ సాక్ష్యం", "ఎలక్ట్రానిక్ ఆధారాలు", "భారతీయ సాక్ష్య అధినియమం", "బిఎస్ఎ",
         )):
             return "digital_evidence"
-        if any(term in q for term in (
-            "indian contract act", "contract act", "भारतीय संविदा अधिनियम", "भारतीय अनुबंध अधिनियम",
-            "భారతీయ ఒప్పందాల చట్టం", "భారత ఒప్పందాల చట్టం",
+        if self._matches_any_alias(q, (
+            "indian contract act", "contract act", "contract", "agreement", "consideration",
+            "भारतीय संविदा अधिनियम", "भारतीय अनुबंध अधिनियम", "संविदा", "अनुबंध",
+            "భారతీయ ఒప్పందాల చట్టం", "భారత ఒప్పందాల చట్టం", "ఒప్పందం",
         )):
             return "contract"
-        if any(term in q for term in (
-            "information technology act", "it act", "सूचना प्रौद्योगिकी अधिनियम",
-            "సమాచార సాంకేతిక చట్టం", "సమాచార సాంకేతికత చట్టం",
+        if self._matches_any_alias(q, (
+            "information technology act", "it act", "identity theft", "electronic signature", "cyber crime",
+            "सूचना प्रौद्योगिकी अधिनियम", "आईटी एक्ट", "पहचान की चोरी", "साइबर अपराध",
+            "సమాచార సాంకేతిక చట్టం", "సమాచార సాంకేతికత చట్టం", "గుర్తింపు దొంగతనం", "సైబర్ నేరం",
         )):
             return "it"
-        if any(term in q for term in (
-            "first information report", "fir", "एफआईआर", "प्राथमिकी", "ఎఫ్‌ఐఆర్", "ఎఫ్ఐఆర్",
+        if self._matches_any_alias(q, (
+            "first information report", "fir", "zero fir", "e-fir", "efir", "cognizable", "cognisable",
+            "एफआईआर", "प्राथमिकी", "प्रथम सूचना रिपोर्ट", "संज्ञेय अपराध",
+            "ఎఫ్‌ఐఆర్", "ఎఫ్ఐఆర్", "మొదటి సమాచార నివేదిక", "జీరో ఎఫ్ఐఆర్",
         )):
             if "crpc" in q or "code of criminal procedure" in q or "दंड प्रक्रिया संहिता" in q:
                 return "crpc"
             return "bnss"
+        if self._matches_any_alias(q, (
+            "consumer protection", "consumer rights", "consumer complaint", "defective goods", "deficiency in service",
+            "consumer dispute", "consumer forum", "consumer court",
+            "उपभोक्ता संरक्षण", "उपभोक्ता अधिकार", "उपभोक्ता शिकायत", "दोषपूर्ण सामान", "दोषपूर्ण वस्तु", "सेवा में कमी",
+            "వినియోగదారుల రక్షణ", "వినియోగదారుల హక్కులు", "వినియోగదారుల ఫిర్యాదు", "లోపభూయిష్ట వస్తువులు", "సేవా లోపం",
+        )):
+            return "consumer"
+        if self._matches_any_alias(q, (
+            "domestic violence", "protection order", "residence order", "shared household", "protection officer", "monetary relief",
+            "घरेलू हिंसा", "संरक्षण आदेश", "निवास आदेश", "साझा गृहस्थी", "संरक्षण अधिकारी",
+            "గృహ హింస", "రక్షణ ఉత్తర్వు", "నివాస ఉత్తర్వు", "ఉమ్మడి గృహం",
+        )):
+            return "domestic_violence"
+        if self._matches_any_alias(q, (
+            "protection of children from sexual offences", "pocso", "child sexual", "sexual assault of child", "child abuse",
+            "पॉक्सो", "पोक्सो", "बाल यौन अपराध", "बाल संरक्षण",
+            "పోక్సో", "పిల్లలపై లైంగిక వేధింపులు", "పిల్లల రక్షణ",
+        )):
+            return "pocso"
+        if self._matches_any_alias(q, (
+            "right to information", "rti", "public information officer", "pio", "information request",
+            "सूचना का अधिकार", "आरटीआई", "लोक सूचना अधिकारी",
+            "సమాచార హక్కు చట్టం", "సమాచార హక్కు", "ఆర్టీఐ", "పబ్లిక్ ఇన్ఫర్మేషన్ ఆఫీసర్",
+        )):
+            return "rti"
+        if self._matches_any_alias(q, (
+            "bharatiya nyaya sanhita", "bns", "theft", "murder", "assault", "criminal breach of trust",
+            "भारतीय न्याय संहिता", "बीएनएस", "चोरी", "धोखाधड़ी",
+            "భారతీయ న్యాయ సంహిత", "బిఎన్‌ఎస్", "దొంగతనం", "దాడి",
+        )):
+            return "bns"
+        if self._matches_any_alias(q, (
+            "code of civil procedure", "cpc", "civil suit", "summons", "plaint", "written statement", "decree",
+            "दीवानी प्रक्रिया संहिता", "सीपीसी", "सिविल वाद", "समन", "डिक्री",
+            "సివిల్ ప్రొసీజర్ కోడ్", "సిపిసి", "సివిల్ దావా", "సమన్లు",
+        )):
+            return "cpc"
+        if self._matches_any_alias(q, (
+            "limitation act", "period of limitation", "condonation of delay", "time barred",
+            "परिसीमा अधिनियम", "मियाद कानून", "विलंब की माफी",
+            "కాలపరిమితి చట్టం", "కాలపరిమితి", "ఆలస్య క్షమాపణ",
+        )):
+            return "limitation"
+        if self._matches_any_alias(q, (
+            "scheduled castes", "scheduled tribes", "prevention of atrocities", "sc st act", "atrocity",
+            "अनुसूचित जाति और अनुसूचित जनजाति", "अत्याचार निवारण अधिनियम", "एससी एसटी एक्ट",
+            "ఎస్సీ ఎస్టీ అట్రాసిటీల చట్టం", "షెడ్యూల్డ్ కులాలు మరియు షెడ్యూల్డ్ తెగలు",
+        )):
+            return "sc_st"
+        if self._matches_any_alias(q, (
+            "constitution of india", "article 21", "article 22", "personal liberty", "fundamental rights",
+            "भारत का संविधान", "अनुच्छेद 21", "अनुच्छेद 22", "व्यक्तिगत स्वतंत्रता",
+            "భారత రాజ్యాంగం", "ఆర్టికల్ 21", "ఆర్టికల్ 22", "వ్యక్తిగత స్వేచ్ఛ",
+        )):
+            return "constitution"
         return ""
 
     @staticmethod
     def _expanded_query(query: str, act_hint: str) -> str:
-        """Add a small bilingual legal vocabulary for English-language PDFs."""
-        if act_hint == "contract":
-            return query + " Indian Contract Act contract agreement offer acceptance consideration capacity consent lawful object"
-        if act_hint == "it":
-            return query + " Information Technology Act identity theft 66C impersonation computer resource electronic signature"
+        """Add a targeted legal vocabulary for English-language PDFs."""
         if act_hint == "bnss":
-            return query + " Bharatiya Nagarik Suraksha Sanhita section 173 information cognizable offence police station electronic communication"
+            return query + " Bharatiya Nagarik Suraksha Sanhita section 173 information cognizable offence police station electronic communication first information report"
+        if act_hint == "bns":
+            return query + " Bharatiya Nyaya Sanhita criminal offence punishment theft cheating assault"
+        if act_hint == "contract":
+            return query + " Indian Contract Act contract agreement offer acceptance consideration capacity consent lawful object breach damages"
+        if act_hint == "it":
+            return query + " Information Technology Act identity theft 66C impersonation computer resource electronic signature cyber crime"
         if act_hint == "crpc":
             return query + " Code of Criminal Procedure section 154 information cognizable offence first information report"
         if act_hint == "digital_evidence":
             return query + " Bharatiya Sakshya Adhiniyam electronic digital records evidence admissibility section 61 62 63 certificate Information Technology Act electronic records legal recognition"
+        if act_hint == "consumer":
+            return query + " Consumer Protection Act consumer rights complaint defective goods deficiency service district commission redressal"
+        if act_hint == "domestic_violence":
+            return query + " Protection of Women from Domestic Violence Act protection order residence monetary relief domestic incident report protection officer"
+        if act_hint == "pocso":
+            return query + " Protection of Children from Sexual Offences Act POCSO child sexual assault special court reporting offence"
+        if act_hint == "rti":
+            return query + " Right to Information Act section 3 section 6 public information officer application request thirty days disposal appeal"
+        if act_hint == "cpc":
+            return query + " Code of Civil Procedure civil suit summons plaint written statement decree execution injunction jurisdiction"
+        if act_hint == "limitation":
+            return query + " Limitation Act period of limitation condonation of delay section 5 appeal application suit bar of limitation"
+        if act_hint == "sc_st":
+            return query + " Scheduled Castes and Scheduled Tribes Prevention of Atrocities Act offences atrocities special court relief"
+        if act_hint == "constitution":
+            return query + " Constitution of India Article 21 Article 22 protection of life personal liberty arrest detention grounds legal practitioner"
         return query
 
     def _build_index(self) -> None:
@@ -270,11 +362,11 @@ class NyayMitraRAG:
                 return fir_sources[:top_k]
         # Explicit constitutional citations should outrank unrelated chunks
         # that happen to share words with a long pasted excerpt.
-        article_match = re.search(r"\b(?:article|art\.)\s*(\d+[A-Z]?)", query, re.IGNORECASE)
-        if article_match and re.search(r"\bconstitution\b", query, re.IGNORECASE):
+        article_match = re.search(r"\b(?:article|art\.|अनुच्छेद|ఆర్టికల్)\s*(\d+[A-Z]?)", query, re.IGNORECASE)
+        if article_match and (act_hint == "constitution" or re.search(r"\b(?:constitution|संविधान|రాజ్యాంగం)\b", query, re.IGNORECASE)):
             article_number = article_match.group(1).casefold()
             exact_article = []
-            for item in self.items:
+            for item in legal_items:
                 act = str(item.get("act_name") or "").casefold()
                 section = str(item.get("section_number") or item.get("section") or "")
                 section_match = re.search(r"\d+[A-Z]?", section, re.IGNORECASE)
@@ -285,16 +377,27 @@ class NyayMitraRAG:
                     exact_article.append(self._public_source(row))
             if exact_article:
                 return exact_article[:top_k]
+
+        # Check for explicit statutory section requests across English, Hindi, and Telugu
+        section_req_match = re.search(r"\b(?:section|sec\.?|धारा|సెక్షన్)\s*(\d+[A-Za-z]?)", query, re.IGNORECASE)
+        explicit_section_num = section_req_match.group(1).casefold() if section_req_match else ""
+
         search_query = self._expanded_query(query, act_hint)
         # Search broadly before filtering so seed examples cannot occupy the
         # result limit and crowd out actual Acts.
         semantic = self._semantic_search(search_query, len(self.items))
         keyword = self._keyword_search(
-            search_query, len(self.items), legal_items, min_score=0.2 if act_hint else 0.34
+            search_query, len(self.items), legal_items, min_score=0.18 if act_hint else 0.34
         )
         merged: dict[str, dict[str, Any]] = {}
         for row in keyword + semantic:
             key = str(row.get("chunk_key") or row.get("id"))
+            if explicit_section_num:
+                row_sec = str(row.get("section_number") or row.get("section") or "").casefold()
+                if row_sec == explicit_section_num or re.search(rf"\b{re.escape(explicit_section_num)}\b", str(row.get("text") or "")):
+                    row = dict(row)
+                    row["score"] = max(float(row.get("score") or 0), 1.0)
+                    row["score_type"] = "explicit_section"
             prev = merged.get(key)
             if prev is None or float(row.get("score") or 0) > float(prev.get("score") or 0):
                 merged[key] = row
@@ -317,11 +420,29 @@ class NyayMitraRAG:
                     term in act_name for term in ("bharatiya sakshya", "information technology", "it act")
                 ):
                     continue
+                if act_hint == "consumer" and "consumer" not in act_name:
+                    continue
+                if act_hint == "domestic_violence" and "domestic violence" not in act_name:
+                    continue
+                if act_hint == "pocso" and not any(term in act_name for term in ("children from sexual", "pocso")):
+                    continue
+                if act_hint == "rti" and "right to information" not in act_name:
+                    continue
+                if act_hint == "bns" and "bharatiya nyaya" not in act_name:
+                    continue
+                if act_hint == "cpc" and "civil procedure" not in act_name:
+                    continue
+                if act_hint == "limitation" and "limitation" not in act_name:
+                    continue
+                if act_hint == "sc_st" and not any(term in act_name for term in ("scheduled castes", "atrocities")):
+                    continue
+                if act_hint == "constitution" and "constitution" not in act_name:
+                    continue
             stype = row.get("score_type")
             score = float(row.get("score") or 0)
             if stype == "cosine_similarity" and score < RELEVANCE_THRESHOLD:
                 continue
-            if stype == "keyword_overlap" and score < (0.2 if act_hint else 0.34):
+            if stype == "keyword_overlap" and score < (0.18 if act_hint else 0.34):
                 continue
             filtered.append(self._public_source(row))
         return filtered[:top_k]
@@ -417,6 +538,16 @@ The final answer must be readable entirely in {self._language_name(lang)} except
 """
 
     @staticmethod
+    def _is_bnss_173_fir_excerpt(source: dict[str, Any]) -> bool:
+        act = str(source.get("act_name") or "").casefold()
+        section = str(source.get("section_number") or source.get("section") or "")
+        text = str(source.get("text") or "").casefold()
+        return (
+            "bharatiya nagarik suraksha" in act
+            and ("173" in section or ("173." in text and any(k in text for k in ("cognizable", "information in"))))
+        )
+
+    @staticmethod
     def _is_article22_arrest_excerpt(source: dict[str, Any]) -> bool:
         act = str(source.get("act_name") or "").casefold()
         section = str(source.get("section_number") or source.get("section") or "")
@@ -429,9 +560,34 @@ The final answer must be readable entirely in {self._language_name(lang)} except
             and ("legal practitioner" in text or "defended" in text)
         )
 
+    def _no_source_answer(self, lang: str) -> str:
+        base = t(lang, "insufficient")
+        acts = self.db.available_acts()
+        filtered_acts = [
+            a for a in acts
+            if not any(x in a.lower() for x in ("educational", "starter", "seed", "fixture"))
+        ]
+        if not filtered_acts:
+            return base
+        sample_acts = ", ".join(filtered_acts[:5])
+        if lang == "hi":
+            return (
+                f"{base}\n\nसुझाव: आप वर्तमान अनुक्रमित अधिनियमों से संबंधित प्रश्न पूछ सकते हैं, जैसे: "
+                f"{sample_acts}। खोज के लिए विशिष्ट शब्दों का प्रयोग करें (जैसे 'एफआईआर', 'धारा 173', 'उपभोक्ता शिकायत', 'सूचना का अधिकार')।"
+            )
+        if lang == "te":
+            return (
+                f"{base}\n\nసూచన: మీరు ప్రస్తుత సూచికలోని చట్టాలపై ప్రశ్నలు అడగవచ్చు, ఉదాహరణకు: "
+                f"{sample_acts}. నిర్దిష్ట పదాలతో శోధించండి (ఉదాహరణకు 'ఎఫ్ఐఆర్', 'సెక్షన్ 173', 'వినియోగదారుల హక్కులు', 'సమాచార హక్కు')."
+            )
+        return (
+            f"{base}\n\nSuggestion: You may ask questions grounded in the currently indexed Acts, such as: "
+            f"{sample_acts}. Try using specific terms like 'FIR', 'Section 173', 'consumer complaint', or 'Right to Information'."
+        )
+
     def _fallback_answer(self, sources: list[dict[str, Any]], lang: str) -> str:
         if not sources:
-            return t(lang, "insufficient")
+            return self._no_source_answer(lang)
         # Without a configured language model, do not pretend to translate or
         # explain arbitrary statutory text. Give useful citations and the exact
         # PDF location, and state clearly what capability needs configuration.
@@ -443,11 +599,16 @@ The final answer must be readable entirely in {self._language_name(lang)} except
             parts.append(
                 f"{i}. {s.get('act_name')} — {t(lang, 'section')} {section}{page_bit}"
             )
-        article22_translation = next(
-            (t(lang, "answer_article22_translation") for s in sources if self._is_article22_arrest_excerpt(s)),
-            "",
-        )
-        explanation = article22_translation or t(lang, "answer_no_translation")
+        explanation = ""
+        for s in sources:
+            if self._is_bnss_173_fir_excerpt(s):
+                explanation = t(lang, "answer_bnss173_translation")
+                break
+            if self._is_article22_arrest_excerpt(s):
+                explanation = t(lang, "answer_article22_translation")
+                break
+        if not explanation:
+            explanation = t(lang, "answer_no_translation")
         parts.extend(["", t(lang, "answer_explanation_heading"), explanation, ""])
         parts.extend([t(lang, "answer_next_steps_heading"), t(lang, "answer_next_steps"), ""])
         parts.extend([t(lang, "answer_limits_heading"), t(lang, "answer_limits"), "", t(lang, "answer_sources_heading")])
@@ -504,7 +665,7 @@ The final answer must be readable entirely in {self._language_name(lang)} except
         query = (query or "").strip()[:MAX_QUERY_CHARS]
         if not query:
             return {
-                "answer": t(lang, "insufficient"),
+                "answer": self._no_source_answer(lang),
                 "sources": [],
                 "mode": "insufficient",
                 "llm_used": False,
@@ -512,7 +673,7 @@ The final answer must be readable entirely in {self._language_name(lang)} except
         sources = self.search(query, top_k)
         if not sources:
             return {
-                "answer": t(lang, "insufficient"),
+                "answer": self._no_source_answer(lang),
                 "sources": [],
                 "mode": "insufficient",
                 "llm_used": False,
