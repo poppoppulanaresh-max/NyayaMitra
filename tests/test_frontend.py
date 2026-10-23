@@ -39,6 +39,12 @@ def test_app_defines_pages():
     assert "global_search" in text
 
 
+def test_chat_does_not_call_private_rag_language_helper():
+    text = (ROOT / "app.py").read_text(encoding="utf-8")
+    assert "rag._response_language(" not in text
+    assert 'result.get("language") or detect_response_language(question, lang)' in text
+
+
 def test_streamlit_apptest_smoke(monkeypatch, tmp_path):
     import os
 

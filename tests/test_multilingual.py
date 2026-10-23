@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from translations import t, suggested_questions
+from translations import detect_response_language, t, suggested_questions
+
+
+def test_response_language_detection_is_independent_of_rag_version():
+    assert detect_response_language("ఎలక్ట్రానిక్ రికార్డుల చట్టం ఏది?", "en") == "te"
+    assert detect_response_language("ऑनलाइन धोखाधड़ी पर कौन सा कानून है?", "en") == "hi"
+    assert detect_response_language("Which law covers contracts?", "te") == "te"
+    assert detect_response_language("Hello", "unsupported") == "en"
 
 
 def test_english_ui_and_query(processor, rag):

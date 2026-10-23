@@ -109,7 +109,7 @@ The administrator hash is in `data/nyay_mitra.db`. Bundled Acts and PDFs uploade
 
 The app can run on Streamlit Community Cloud without a paid server plan. Connect the GitHub repository `poppoppulanaresh-max/NyayaMitra`, choose the `main` branch and `app.py` as the entrypoint, then add the values from `streamlit-secrets.example.toml` under **App settings → Secrets**. At minimum, set `NYAYA_PUBLIC_MODE = "1"`. Choose a unique `ADMIN_PASSWORD`; do not paste a real password into this repository. The `.streamlit/secrets.toml` file is ignored by Git if you create it locally.
 
-Set `ADMIN_USERNAME = "NyayaMitra"` and set `ADMIN_PASSWORD` in the private Secrets panel to the password you intend to use. The repository example contains a placeholder only. `OPENAI_API_KEY` is optional. Without it, the app uses offline retrieval and shows cited PDF excerpts; arbitrary passages are not translated or paraphrased. If you add a key, non-English questions may be expanded into English search terms, and questions plus retrieved legal excerpts are sent to that AI provider to generate answers and translations. Tell visitors this and advise them not to enter private or sensitive case details.
+Set `ADMIN_USERNAME = "NyayaMitra"` and set `ADMIN_PASSWORD` in the private Secrets panel to the password you intend to use. The repository example contains a placeholder only. If sign-in rejects the values, check for old `ADMIN_USERNAME` or `ADMIN_PASSWORD` environment variables in the hosting settings: environment variables take precedence over Streamlit Secrets. Save changes and reboot the app so it reloads configuration. `OPENAI_API_KEY` is optional. Without it, the app uses offline retrieval and shows cited PDF excerpts; arbitrary passages are not translated or paraphrased. If you add a key, non-English questions may be expanded into English search terms, and questions plus retrieved legal excerpts are sent to that AI provider to generate answers and translations. Tell visitors this and advise them not to enter private or sensitive case details.
 
 Streamlit Community Cloud uses an ephemeral local filesystem. PDFs committed in `uploads/` are included with the app and can be re-indexed after restart, but account databases and user-uploaded PDFs are not durable and may be lost on restart or redeploy. Public mode avoids keeping chat/search/quiz histories. Keep a separate copy of source PDFs. For persistent account uploads and databases, use the paid disk-backed Render configuration below.
 
@@ -130,7 +130,7 @@ The Blueprint enables `NYAYA_PUBLIC_MODE=1`: chat messages, search terms, and qu
 | `python` not found | Install Python 3.10/3.11 and tick “Add python to PATH”. |
 | `faiss-cpu` install fails | Confirm you are in `.venv` and using 64-bit Python. |
 | Embedding model download hangs | Check internet, or set `NYAYA_USE_EMBEDDINGS=0`. |
-| Admin sign-in always fails | Confirm `ADMIN_USERNAME` is `NyayaMitra` and `ADMIN_PASSWORD` is set in `.env` or deployment Secrets, then restart the app. |
+| Admin sign-in always fails | Confirm Streamlit Cloud **App settings → Secrets** contains `ADMIN_USERNAME = "NyayaMitra"` and the intended `ADMIN_PASSWORD`. Check hosting environment variables too, because they override Secrets. Save and reboot the app. Do not commit the password. |
 | Scanned PDF rejected | Provide a text-based PDF. OCR is not in this project. |
 | LLM answers not appearing | Expected without `OPENAI_API_KEY`. Extractive answers still run. |
 

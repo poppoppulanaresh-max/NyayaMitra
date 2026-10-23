@@ -1,7 +1,18 @@
 """Central English, Hindi, and Telugu UI strings. Legal quotations stay in source language."""
 
+import re
+
 LANGS = {"English": "en", "हिन्दी": "hi", "తెలుగు": "te"}
 LANG_LABELS = {code: label for label, code in LANGS.items()}
+
+
+def detect_response_language(query: str, preferred: str = "en") -> str:
+    """Select Hindi or Telugu from its script, otherwise use a supported preference."""
+    if re.search(r"[\u0C00-\u0C7F]", query or ""):
+        return "te"
+    if re.search(r"[\u0900-\u097F]", query or ""):
+        return "hi"
+    return preferred if preferred in {"en", "hi", "te"} else "en"
 
 _EN = {
     "nav_label": "NAVIGATION",

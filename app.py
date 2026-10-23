@@ -19,7 +19,7 @@ from document_processor import DocumentProcessingError, DocumentProcessor, sha25
 from legal_search import LegalSearch
 from quiz import QuizService
 from rag_engine import NyayMitraRAG
-from translations import LANGS, suggested_questions, suggested_question_prompts, t as translate
+from translations import LANGS, detect_response_language, suggested_questions, suggested_question_prompts, t as translate
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("nyaya.app")
@@ -37,6 +37,7 @@ def t(lang: str, key: str) -> str:
     if value == key or re.fullmatch(r"[a-z0-9]+(?:_[a-z0-9]+)+", value):
         return " ".join(part.capitalize() for part in value.replace("_", " ").split())
     return value
+
 
 st.set_page_config(
     page_title="Nyaya Mitra",
@@ -789,7 +790,7 @@ def page_chat(lang: str, db: Database, rag: NyayMitraRAG) -> None:
             (row.get("content", "") for row in reversed(st.session_state.messages[:index]) if row.get("role") == "user"),
             "",
         )
-        response_lang = rag._response_language(prior_user, lang)
+        response_lang = detect_response_language(prior_user, lang)
         if msg.get("language", "en") == response_lang:
             continue
         sources = msg.get("sources") or []
@@ -836,10 +837,10 @@ def page_chat(lang: str, db: Database, rag: NyayMitraRAG) -> None:
                         result = rag.answer(question, lang)
                     answer = result.get("answer") or t(lang, "insufficient")
                     sources = result.get("sources") or []
-                    response_lang = result.get("language", rag._response_language(question, lang))
+                    response_lang = result.get("language") or detect_response_language(question, lang)
                 except Exception:
                     logger.exception("Chat answer failed")
-                    response_lang = rag._response_language(question, lang)
+                    response_lang = detect_response_language(question, lang)
                     answer = t(response_lang, "error_generic")
                     sources = []
                 st.session_state.messages.append({"role": "assistant", "content": answer, "sources": sources, "language": response_lang})
@@ -1108,9 +1109,9 @@ def page_admin_portal(lang: str, auth_db: Database) -> None:
                     establish_account_session(user_id, clean_username, True)
                     st.rerun()
                 else:
-                    st.error("The username or password is incorrect.")
+                    st.error('The username or password does not match the configured admin credentials. In Streamlit Cloud, check App settings → Secrets for ADMIN_USERNAME = "NyayaMitra" and the intended ADMIN_PASSWORD. Environment variables override Secrets. Save the settings and reboot the app.')
             else:
-                st.error("The username or password is incorrect.")
+                st.error('The username or password does not match the configured admin credentials. In Streamlit Cloud, check App settings → Secrets for ADMIN_USERNAME = "NyayaMitra" and the intended ADMIN_PASSWORD. Environment variables override Secrets. Save the settings and reboot the app.')
 
 
 def page_admin(lang: str, db: Database, processor: DocumentProcessor, rag: NyayMitraRAG) -> None:
