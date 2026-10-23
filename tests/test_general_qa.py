@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from document_processor import pages_to_chunks
+from document_processor import is_explanatory_page, pages_to_chunks, structure_headings
 from tests.pdf_builder import text_pdf_bytes
 
 
@@ -104,10 +104,34 @@ def test_answer_prompt_sets_detail_steps_escalation_and_language(processor, rag)
     }]
     prompt = rag._prompt("ఈ ఒప్పందం చెల్లుబాటు అవుతుందా?", sources, "te")
     assert "What the law is about" in prompt
-    assert "What to do next" in prompt
-    assert "Whether to contact a higher authority" in prompt
+    assert "Steps to take" in prompt
+    assert "When to contact an authority" in prompt
     assert "entire answer" in prompt and "Telugu" in prompt
     assert "Do not repeat a Sources list or URL" in prompt
+    assert "Do not use numbered headings" in prompt
+    assert "short, faithful translation" in prompt
+    assert "same layout for every question" in prompt
+    assert "never numbered steps" in prompt
+
+
+def test_civil_suit_limitation_question_retrieves_exact_schedule_article(processor, rag):
+    processor.ingest(
+        "limitation.pdf",
+        text_pdf_bytes(
+            "PART X. SUITS FOR WHICH THERE IS NO PRESCRIBED PERIOD\n"
+            "113. Any suit for which no period of limitation is provided elsewhere in this Schedule.\n"
+            "Three years. When the right to sue accrues.\n114. Appeal from an order of acquittal."
+        ),
+        act_name="The Limitation Act, 1963",
+        source_url="https://example.test/limitation.pdf",
+    )
+    rag.reload()
+    sources = rag.search("What is the time limit for filing a civil suit under the Limitation Act?", 5)
+    assert sources
+    assert sources[0]["section_number"] == "113"
+    assert sources[0]["provision_type"] == "article"
+    assert "Three years" in sources[0]["text"]
+    assert "When the right to sue accrues" in sources[0]["text"]
 
 
 def test_pages_to_chunks_carries_section_through_continuation():
@@ -132,6 +156,51 @@ def test_arrangement_of_sections_is_not_mislabeled_as_a_statutory_section():
     assert all(chunk["section_title"] == "Arrangement of Sections" for chunk in chunks)
 
 
+def test_explanatory_bill_material_does_not_inherit_a_statutory_section(processor, rag):
+    record = processor.ingest(
+        "bill.pdf",
+        text_pdf_bytes(
+            "63. Admissibility of electronic records. operative text.\n"
+            "STATEMENT OF OBJECTS AND REASONS\n"
+            "The proposed legislation, inter alia, provides as under: evidence includes electronic records."
+        ),
+        act_name="The Bharatiya Sakshya Adhiniyam, 2023",
+    )
+    rag.reload()
+    chunks = [row for row in rag.items if row["document_id"] == record["id"]]
+    explanatory = next(row for row in chunks if "proposed legislation" in row["text"].casefold())
+    assert is_explanatory_page(explanatory["text"])
+    assert explanatory["section_number"] == "unknown"
+    assert explanatory["is_explanatory_page"] is True
+    assert all(not row.get("is_explanatory_page") for row in rag.search("proposed legislation electronic records"))
+
+
+def test_generated_answer_with_unretrieved_section_is_rejected(rag, monkeypatch):
+    class BadCitationClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    from unittest.mock import MagicMock
+
+                    response = MagicMock()
+                    response.choices = [MagicMock(message=MagicMock(content="Section 527 of this Act governs contracts."))]
+                    return response
+
+    monkeypatch.setattr(rag, "_llm", lambda: BadCitationClient())
+    sources = [{
+        "act_name": "The Indian Contract Act, 1872",
+        "section_number": "1",
+        "text": "This Act may be called the Indian Contract Act, 1872.",
+        "page_number": "10",
+    }]
+    answer, used_llm = rag.compose_answer("What does the Act say?", sources)
+    assert used_llm is False
+    assert "not present in the retrieved source citations" in answer
+    assert not rag._citations_match_sources("Section 527 applies.", sources)
+    assert rag._citations_match_sources("Section 1 applies.", [{**sources[0], "section_number": "1"}])
+
+
 def test_section_boundaries_split_chunks_and_ignore_editorial_footnotes():
     chunks = pages_to_chunks(
         [(1, "1. Short title.—This Act may be called the Sample Act. 1. For the Statement of Objects and Reasons, see the Gazette. 2. Interpretation.—In this Act the following words have the meanings below.")],
@@ -141,6 +210,20 @@ def test_section_boundaries_split_chunks_and_ignore_editorial_footnotes():
     assert [chunk["section_number"] for chunk in section_chunks] == ["1", "2"]
     assert section_chunks[0]["section_title"].startswith("Short title")
     assert section_chunks[1]["section_title"].startswith("Interpretation")
+
+
+def test_amendment_history_footnotes_are_not_mislabeled_as_act_sections():
+    text = (
+        "1. Short title. This Act may be called the Sample Act.\n"
+        "2. Interpretation. Words have the meanings stated here.\n"
+        "3. Panth Piploda—The Central Government may extend this Act.\n"
+        "p. 527. It has been amended in certain territories.\n"
+        "4. The words in the Schedule are repealed by a later Act."
+    )
+    headings = structure_headings(text)
+    assert [(number, title) for _, kind, number, title in headings if kind == "section"] == [
+        ("1", "Short title"), ("2", "Interpretation")
+    ]
 
 
 def test_article_headings_keep_article_citation_type(processor, rag, monkeypatch):

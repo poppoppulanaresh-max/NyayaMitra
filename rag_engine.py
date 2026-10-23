@@ -22,7 +22,7 @@ from config import (
     USE_EMBEDDINGS,
 )
 from database import Database
-from document_processor import is_contents_page, structure_headings
+from document_processor import is_contents_page, is_explanatory_page, structure_headings
 from translations import t
 
 logger = logging.getLogger("nyaya.rag")
@@ -136,6 +136,9 @@ class NyayMitraRAG:
             contents_pages = {
                 page for page, texts in page_texts.items() if is_contents_page("\n".join(texts))
             }
+            explanatory_pages = {
+                page for page, texts in page_texts.items() if is_explanatory_page("\n".join(texts))
+            }
             for row in rows:
                 if str(row.get("page_number") or "") in contents_pages:
                     row["is_contents_page"] = True
@@ -145,9 +148,19 @@ class NyayMitraRAG:
                     row["chapter"] = ""
                     row["chapter_title"] = ""
                     continue
+                if str(row.get("page_number") or "") in explanatory_pages:
+                    row["is_contents_page"] = False
+                    row["is_explanatory_page"] = True
+                    row["section_number"] = "unknown"
+                    row["section_title"] = "Explanatory material (not operative law)"
+                    row["provision_type"] = "editorial"
+                    row["chapter"] = ""
+                    row["chapter_title"] = ""
+                    continue
                 row["is_contents_page"] = False
+                row["is_explanatory_page"] = False
                 known_section = str(row.get("section_number") or "unknown")
-                if known_section.casefold() not in {"", "unknown", "none"}:
+                if known_section.casefold() not in {"", "unknown", "none"} and section_number.casefold() in {"", "unknown", "none", known_section.casefold()}:
                     section_number = known_section
                     section_title = str(row.get("section_title") or section_title)
                     provision_type = str(row.get("provision_type") or provision_type)
@@ -155,15 +168,15 @@ class NyayMitraRAG:
                 if known_chapter:
                     chapter = known_chapter
                     chapter_title = str(row.get("chapter_title") or chapter_title)
-                for _, kind, number, title in structure_headings(str(row.get("text") or "")):
+                row_headings = structure_headings(str(row.get("text") or ""))
+                for _, kind, number, title in row_headings:
                     if kind == "chapter":
                         chapter, chapter_title = number, title
                     else:
                         section_number, section_title = number, title
                         provision_type = kind
-                if known_section.casefold() in {"", "unknown", "none"}:
-                    row["section_number"] = section_number
-                    row["section_title"] = section_title
+                row["section_number"] = section_number
+                row["section_title"] = section_title
                 row["provision_type"] = provision_type
                 if not known_chapter:
                     row["chapter"] = chapter
@@ -541,11 +554,44 @@ class NyayMitraRAG:
         # Educational starter text is useful for quizzes, but is not a statute
         # and must never be cited as legal evidence.
         legal_items = [item for item in self.items if not self._is_educational_sample(item)]
+        # Bill memoranda and explanatory notes often summarize proposed text;
+        # they are not the enacted provision. Never cite them as law.
+        legal_items = [item for item in legal_items if not item.get("is_explanatory_page")]
         if not legal_items:
             return []
         translated_query = self._expand_query_for_retrieval(query)
         act_hint = self._query_act_hint(query) or self._query_act_hint(translated_query)
         include_contents = self._asks_for_contents(query) or self._asks_for_contents(translated_query)
+
+        # A general civil-suit limitation question needs the Schedule's
+        # residual-suits entry, not a random provision that mentions a civil
+        # proceeding. Retrieve that entry directly when it is actually present.
+        combined_query = f"{query} {translated_query}"
+        if act_hint == "limitation" and re.search(
+            r"\b(civil\s+)?suits?\b|सिविल\s*(?:वाद|मुकदमा)|సివిల్\s*(?:కేసు|దావా)",
+            combined_query,
+            re.IGNORECASE,
+        ):
+            residual_suit_rule = []
+            for item in legal_items:
+                if "limitation act" not in str(item.get("act_name") or "").casefold():
+                    continue
+                text = str(item.get("text") or "")
+                match = re.search(
+                    r"(?i)(?<![\w.])113\.\s*(Any suit for which no period of\s+limitation\s+is provided elsewhere\s+in this Schedule\.)\s*(Three years\.)\s*(When the right to sue accrues\.)",
+                    text,
+                )
+                if match:
+                    row = dict(item)
+                    row["section_number"] = "113"
+                    row["section_title"] = "Suits for which there is no prescribed period"
+                    row["provision_type"] = "article"
+                    row["text"] = "Article 113. " + " ".join(match.groups())
+                    row["score"] = 1.0
+                    row["score_type"] = "targeted_schedule_entry"
+                    residual_suit_rule.append(self._public_source(row))
+            if residual_suit_rule:
+                return residual_suit_rule[:top_k]
 
         # FIR has a specific current provision in BNSS section 173. Prefer its
         # text directly so generic words cannot retrieve unrelated Acts.
@@ -635,6 +681,8 @@ class NyayMitraRAG:
         for row in ranked:
             if self._is_educational_sample(row):
                 continue
+            if row.get("is_explanatory_page"):
+                continue
             if row.get("is_contents_page") and not include_contents:
                 continue
             stype = row.get("score_type")
@@ -695,6 +743,31 @@ class NyayMitraRAG:
     def _language_name(self, code: str) -> str:
         return {"en": "English", "hi": "Hindi", "te": "Telugu"}.get(code, "English")
 
+    @staticmethod
+    def _citations_match_sources(answer: str, sources: list[dict[str, Any]]) -> bool:
+        """Reject generated section/article numbers absent from retrieved provision metadata."""
+        allowed = {
+            str(source.get("section_number") or source.get("section") or "").strip().casefold()
+            for source in sources
+        }
+        allowed.discard("")
+        allowed.discard("unknown")
+        claimed = re.findall(
+            r"(?i)\b(?:sections?|secs?\.?|articles?|arts?\.?)\s*([0-9]{1,4}[a-z]?(?:\s*\([^)]{1,12}\))?)|"
+            r"(?:धारा|अनुच्छेद|సెక్షన్|ఆర్టికల్)\s*([0-9]{1,4}[a-z]?)",
+            answer or "",
+        )
+        numbers = [a or b for a, b in claimed]
+        for number in numbers:
+            normalized = re.sub(r"\s+", "", number).casefold()
+            if not any(
+                normalized == re.sub(r"\s+", "", value).casefold()
+                or normalized.startswith(re.sub(r"\s+", "", value).casefold() + "(")
+                for value in allowed
+            ):
+                return False
+        return True
+
     def _prompt(self, query: str, sources: list[dict[str, Any]], lang: str) -> str:
         source_text = "\n\n".join(
             (
@@ -722,9 +795,10 @@ Hard rules:
 - If sources conflict, say so transparently.
 - If sources are insufficient, say that clearly and do not fill gaps from training data.
 - Write the entire answer, including headings, explanations, translated provisions, and practical steps, in {self._language_name(lang)}. Do not leave explanatory sentences in English. Keep only official Act names, section/article identifiers, proper nouns, and URLs in their source form where needed for accurate citations.
+- Apply this same answer policy to every question and every legal topic, including general explanations, rights, definitions, deadlines, procedures, penalties, comparisons, and fact-specific situations. Do not switch to a numbered FAQ or a different layout based on topic.
 - Explain the law in detail, not merely list the retrieved passages. For each relevant provision, give a short faithful unofficial translation into {self._language_name(lang)}, explain its key terms and practical effect in plain language, and connect it to the facts actually stated in the user's question. Never invent missing facts.
 - The user wants to know where the law appears: cite the exact Act, section/article, and PDF page from the supplied source metadata. Identify the source passage as an unofficial translation; do not imply that the translation is the official statutory wording.
-- Give practical next steps as a numbered list only when they are supported by the supplied sources. If a procedure, deadline, forum, or document requirement is not stated in the supplied sources, explicitly say it is not established by the retrieved text instead of guessing.
+- Give practical next steps only when the user describes a situation and the supplied sources support them. Use short paragraphs or unnumbered bullets, never numbered steps. If a procedure, deadline, forum, or document requirement is not stated in the supplied sources, explicitly say it is not established by the retrieved text instead of guessing.
 - If the user gives too few facts to apply a provision, explain what the supplied provision generally says and ask a brief follow-up question in {self._language_name(lang)}.
 - Do not copy long statutory quotations into the answer. The original PDF passage is available separately in the source viewer; include only a short translated extract when useful.
 - Preserve Act names, section numbers, dates, URLs, and proper nouns as written in the source when needed for accurate citations. Clearly label translations as unofficial.
@@ -738,13 +812,18 @@ User question:
 Retrieved sources:
 {source_text}
 
-Write a detailed but clear response in this order, using natural headings in {self._language_name(lang)}:
-1. What the law is about: one or two plain-language sentences.
-2. Answer: directly answer the user's question using the retrieved evidence.
-3. What the relevant provision means: explain key terms and translate the relevant rule into {self._language_name(lang)} when the PDF is in another language. Mark this as an unofficial translation.
-4. What to do next: give practical numbered steps only when supported by the supplied sources. State when a step, deadline, required document, or forum is not established by the evidence.
-5. Whether to contact a higher authority: name an office or authority only if the sources support it; otherwise clearly say the retrieved text does not identify one.
-6. What details are missing: ask one brief follow-up only if necessary to apply the law to the user's situation.
+Write a detailed but clear response using the same layout for every question, with natural headings and short paragraphs in {self._language_name(lang)}:
+When the question is in Hindi or Telugu, start with a short, faithful translation of the most relevant retrieved statutory passage in that language, even when the PDF is in English. Put the translated passage before its explanation and mark it as an unofficial translation. Do not present it as an official quotation. For an English question, include a translation only when it helps explain a source written in another language.
+
+Then use these natural, unnumbered headings in the user's language (omit a heading when it does not apply):
+- What the law is about.
+- What this means for your question.
+- What the relevant provision means in plain language.
+- Steps to take, if the user described a situation and the sources support specific steps. Use an unnumbered bulleted list only when several steps are supported; otherwise use a short paragraph.
+- When to contact an authority, only if supported by the sources. If the sources do not identify one, state that briefly.
+- What detail is needed, only if a material fact is missing.
+
+Do not use numbered headings, a numbered FAQ, or a repeated question-and-answer format. Keep each heading followed by its explanation in a short readable paragraph. Avoid repeating the same translation in multiple sections.
 
 The app will display the Act, provision, PDF page, official link, and expandable original passages below your answer. Do not repeat a Sources list or URL in the answer body. Do not include the original English PDF passage as a substitute for translating and explaining it.
 
@@ -798,6 +877,9 @@ The final answer must be readable entirely in {self._language_name(lang)} except
             content = (response.choices[0].message.content or "").strip() if response and response.choices else ""
             if content:
                 self._llm_last_error = {}
+                if not self._citations_match_sources(content, sources):
+                    logger.warning("Rejected generated answer with a provision citation not present in retrieved sources")
+                    return t(lang, "llm_unsupported_citation"), False
                 return content, True
         except Exception as exc:
             self._llm_last_error = {

@@ -25,7 +25,7 @@ CHAPTER_RE = re.compile(
 )
 SECTION_PATTERNS = (
     re.compile(
-        r"(?i)(?:^|\s)(?:Section|Sec\.?|Article|Art\.?|धारा|अनुच्छेद|సెక్షన్|ఆర్టికల్)\s+(\d{1,3}[A-Za-z]?)\s*[.\-–:]?\s*([^\n]{0,160})"
+        r"(?im)^\s*(?:Section|Sec\.?|Article|Art\.?|धारा|अनुच्छेद|సెక్షన్|ఆర్టికల్)\s+(\d{1,3}[A-Za-z]?)\s*[.\-–:]?\s*([^\n]{0,160})"
     ),
     # Many Indian Acts print section headings as “10. What agreements are
     # contracts” without the word “Section”. Requiring a line start and a
@@ -123,7 +123,9 @@ def structure_headings(text: str) -> list[tuple[int, str, str, str]]:
             title = clean_heading_title(match.group(2) or "")[:160]
             if provision_type == "section" and re.match(
                 r"(?i)(?:for the statement of objects|subs?\.? by act|ins\.? by act|"
-                r"omitted by act|the words .* omitted|the enactments mentioned|see gazette|vide act)",
+                r"omitted by act|the words\b|the enactments mentioned|see gazette|vide act|"
+                r"panth\s+piploda\b|it has been (?:amended|extended|declared)\b|"
+                r"this act has been (?:amended|extended)\b)",
                 title,
             ):
                 continue
@@ -142,6 +144,19 @@ def is_contents_page(text: str) -> bool:
         return True
     section_index = re.search(r"(?im)^\s*SECTIONS\s*$", sample)
     return bool(section_index and len(structure_headings(text)) >= 3)
+
+
+def is_explanatory_page(text: str) -> bool:
+    """Identify bill notes and other editorial matter that is not operative law."""
+    sample = (text or "")[:5000].casefold()
+    return bool(re.search(
+        r"(?m)^\s*statement\s+of\s+objects\s+and\s+reasons\s*$|"
+        r"the\s+proposed\s+legislation\s*,?\s*inter\s+alia\s*,?\s*provides\s+as\s+under|"
+        r"^\s*notes?\s+on\s+clauses\s*$|^\s*financial\s+memorandum\s*$|"
+        r"^\s*memorandum\s+regarding\s+delegated\s+legislation\s*$|"
+        r"^\s*statement\s+of\s+objects\s*&\s*reasons\s*$",
+        sample,
+    ))
 
 
 def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
@@ -212,9 +227,15 @@ def pages_to_chunks(pages: list[tuple[int, str]], meta: dict[str, Any]) -> list[
     current_chapter, current_chapter_title = "", ""
     for page_no, page_text in pages:
         contents_page = is_contents_page(page_text)
-        headings = [] if contents_page else structure_headings(page_text)
+        explanatory_page = is_explanatory_page(page_text)
+        headings = [] if contents_page or explanatory_page else structure_headings(page_text)
         if contents_page:
             current_section, current_section_title = "unknown", "Arrangement of Sections"
+            current_chapter, current_chapter_title = "", ""
+        elif explanatory_page:
+            # Do not carry the last operative provision number into a Bill's
+            # Statement of Objects and Reasons or explanatory memorandum.
+            current_section, current_section_title = "unknown", "Explanatory material (not operative law)"
             current_chapter, current_chapter_title = "", ""
         section_events = [event for event in headings if event[1] in {"section", "article"}]
         segment_starts = [0] + [event[0] for event in section_events[1:]]
@@ -248,8 +269,8 @@ def pages_to_chunks(pages: list[tuple[int, str]], meta: dict[str, Any]) -> list[
                         "chunk_key": chunk_key,
                         "document_id": meta["document_id"],
                         "act_name": meta.get("act_name") or "",
-                        "section_number": current_section,
-                        "section_title": current_section_title or meta.get("section_title") or "",
+                        "section_number": "unknown" if explanatory_page else current_section,
+                        "section_title": "Explanatory material (not operative law)" if explanatory_page else (current_section_title or meta.get("section_title") or ""),
                         "provision_type": current_provision_type,
                         "chapter": current_chapter,
                         "chapter_title": current_chapter_title,
