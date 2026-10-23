@@ -797,7 +797,14 @@ The final answer must be readable entirely in {self._language_name(lang)} except
                 "status_code": str(getattr(exc, "status_code", "") or ""),
                 "provider_code": str(getattr(exc, "code", "") or ""),
             }
-            logger.warning("LLM answer generation failed (%s)", type(exc).__name__)
+            logger.warning(
+                "LLM answer generation failed (type=%s status=%s provider_code=%s)",
+                type(exc).__name__,
+                self._llm_last_error["status_code"] or "unknown",
+                self._llm_last_error["provider_code"] or "unknown",
+            )
+            if str(self._llm_last_error["status_code"]) == "429":
+                return t(lang, "llm_rate_limited"), False
         return t(lang, "llm_unavailable"), False
 
     def _citations_from_sources(self, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -127,6 +127,34 @@ def test_provider_error_diagnostics_are_safe(processor, rag, monkeypatch):
     assert "secret-do-not-log" not in str(rag.status())
 
 
+def test_rate_limit_error_gets_actionable_localized_message(processor, rag, monkeypatch):
+    processor.ingest(
+        "rti.pdf",
+        text_pdf_bytes("Section 3 all citizens shall have the right to information. " * 8),
+        act_name="Right to Information Act, 2005",
+    )
+    rag.reload()
+
+    class RateLimitError(Exception):
+        status_code = 429
+        code = "insufficient_quota"
+
+    class FailingClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    raise RateLimitError("rate limited")
+
+    monkeypatch.setattr(rag, "_llm", lambda: FailingClient())
+    answer, used = rag.compose_answer(
+        "ఇన్ఫర్మేషన్ హక్కు", [{"act_name": "Right to Information Act", "text": "Section 3"}], "te"
+    )
+    assert used is False
+    assert "429" in answer
+    assert "బిల్లింగ్" in answer
+
+
 def test_citations_only_from_retrieved(processor, rag, monkeypatch):
     processor.ingest(
         "rti.pdf",
