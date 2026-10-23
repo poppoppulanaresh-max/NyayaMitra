@@ -37,7 +37,7 @@ def verify_password(password: str, stored: str) -> bool:
 
 def bootstrap_admin(db: Database) -> str:
     """Create/update admin from environment. Returns status: configured|missing|unchanged."""
-    username = (config.ADMIN_USERNAME or "admin").strip()
+    username = config.ADMIN_USERNAME.strip()
     password = config.ADMIN_PASSWORD
     if not password:
         if db.admin_count() == 0:

@@ -155,9 +155,9 @@ def get_auth_db() -> Database:
     ensure_account_schema(db)
     bootstrap_admin(db)
     if config.ADMIN_PASSWORD:
-        stored_hash = db.get_admin_hash(config.ADMIN_USERNAME or "admin")
+        stored_hash = db.get_admin_hash(config.ADMIN_USERNAME)
         if stored_hash:
-            sync_admin_account(db, config.ADMIN_USERNAME or "admin", stored_hash)
+            sync_admin_account(db, config.ADMIN_USERNAME, stored_hash)
     return db
 
 
@@ -247,6 +247,42 @@ def document_pdf_path(db: Database, stored_filename: str) -> Path:
     if db.library_db:
         return db.library_db.uploads_dir / stored_filename
     return local_path
+
+
+def publish_legacy_admin_pdfs(profile_db: Database, library_db: Database) -> bool:
+    """Move PDFs uploaded by the former profile-local admin flow to the shared library."""
+    with profile_db.connect() as con:
+        legacy_docs = [
+            dict(row) for row in con.execute(
+                "SELECT * FROM documents WHERE active = 1 AND lower(original_filename) LIKE '%.pdf'"
+            ).fetchall()
+        ]
+    processor = DocumentProcessor(library_db, library_db.uploads_dir)
+    changed = False
+    for doc in legacy_docs:
+        # Bundled/shared documents are already visible to every profile.
+        if library_db.get_document(str(doc["id"])):
+            continue
+        path = profile_db.uploads_dir / str(doc.get("stored_filename") or "")
+        if not path.is_file():
+            logger.warning("Legacy admin PDF is missing from profile storage: %s", doc.get("original_filename"))
+            continue
+        try:
+            existing = library_db.find_document_by_hash(str(doc.get("file_hash") or ""))
+            if not existing:
+                processor.ingest(
+                    filename=str(doc.get("original_filename") or path.name),
+                    data=path.read_bytes(),
+                    act_name=str(doc.get("act_name") or ""),
+                    source_url=str(doc.get("source_url") or ""),
+                    language=str(doc.get("language") or "en"),
+                    version_or_date=str(doc.get("version_or_date") or ""),
+                )
+            profile_db.deactivate_document(str(doc["id"]))
+            changed = True
+        except (DocumentProcessingError, OSError):
+            logger.exception("Could not publish legacy admin PDF %s", doc.get("original_filename"))
+    return changed
 
 
 @st.cache_resource
@@ -515,7 +551,7 @@ def sidebar_nav(lang: str) -> None:
             ("quiz", t(lang, "quiz")),
             ("admin_portal", "Admin Portal"),
         ]
-        if st.session_state.user_id:
+        if st.session_state.is_admin:
             items.append(("upload", t(lang, "upload")))
         if st.session_state.is_admin:
             items.append(("admin", t(lang, "admin")))
@@ -660,20 +696,30 @@ def render_pdf_law_library(lang: str, db: Database, query: str = "") -> None:
                 st.caption(str(doc["version_or_date"]))
             stored_pdf = document_pdf_path(db, str(doc.get("stored_filename") or ""))
             if stored_pdf.is_file():
+                pdf_data = stored_pdf.read_bytes()
                 st.download_button(
                     "Download PDF",
-                    data=stored_pdf.read_bytes(),
+                    data=pdf_data,
                     file_name=str(doc.get("original_filename") or "legal_document.pdf"),
                     mime="application/pdf",
                     key=f"laws_download_act_{doc['id']}",
                     use_container_width=True,
+                )
+                pdf_b64 = base64.b64encode(pdf_data).decode("ascii")
+                st.components.v1.html(
+                    f'<iframe title="{escape(title)} PDF" '
+                    f'style="width:100%;height:680px;border:1px solid #d9dee6;border-radius:10px" '
+                    f'src="data:application/pdf;base64,{pdf_b64}"></iframe>',
+                    height=690,
+                    scrolling=False,
                 )
             first_chunks = chunks[:2]
             if first_chunks:
                 st.caption(t(lang, "act_text_preview"))
                 for chunk in first_chunks:
                     if chunk.get("section_number") and chunk.get("section_number") != "unknown":
-                        st.markdown(f"**{t(lang, 'section')} {escape(str(chunk['section_number']))}**")
+                        provision_label = t(lang, "article") if chunk.get("provision_type") == "article" else t(lang, "section")
+                        st.markdown(f"**{provision_label} {escape(str(chunk['section_number']))}**")
                     st.write(chunk.get("text") or "")
             official_url = str(doc.get("source_url") or "").strip()
             if official_url:
@@ -704,11 +750,20 @@ def localized_verification_status(lang: str, status: str) -> str:
 def render_sources(lang: str, sources: list) -> None:
     if not sources:
         return
+    first = sources[0]
+    provision_label = t(lang, "article") if first.get("provision_type") == "article" else t(lang, "section")
+    section = first.get("section_number") or first.get("section") or t(lang, "unknown_section")
+    page = f" · {t(lang, 'page')} {first.get('page_number')}" if first.get("page_number") else ""
+    st.caption(f"{first.get('act_name')} — {provision_label} {section}{page}")
+    first_url = first.get("source_url") or first.get("source") or ""
+    if first_url.startswith(("https://", "http://")):
+        st.markdown(f"[{t(lang, 'source')}: {first_url}]({first_url})")
     with st.expander(t(lang, "sources"), expanded=False):
         st.caption(t(lang, "translated_note"))
         for s in sources:
+            provision_label = t(lang, "article") if s.get("provision_type") == "article" else t(lang, "section")
             st.markdown(
-                f"**{s.get('act_name')} — {t(lang, 'section')} {s.get('section_number') or s.get('section') or t(lang, 'unknown_section')}**"
+                f"**{s.get('act_name')} — {provision_label} {s.get('section_number') or s.get('section') or t(lang, 'unknown_section')}**"
                 + (f" · {s.get('section_title')}" if s.get("section_title") else "")
             )
             meta = []
@@ -728,15 +783,18 @@ def render_sources(lang: str, sources: list) -> None:
 
 def page_chat(lang: str, db: Database, rag: NyayMitraRAG) -> None:
     for index, msg in enumerate(st.session_state.messages):
-        if msg.get("role") != "assistant" or msg.get("language", "en") == lang:
+        if msg.get("role") != "assistant":
             continue
         prior_user = next(
             (row.get("content", "") for row in reversed(st.session_state.messages[:index]) if row.get("role") == "user"),
             "",
         )
+        response_lang = rag._response_language(prior_user, lang)
+        if msg.get("language", "en") == response_lang:
+            continue
         sources = msg.get("sources") or []
-        msg["content"] = rag.compose_answer(prior_user, sources, lang)[0] if sources else t(lang, "insufficient")
-        msg["language"] = lang
+        msg["content"] = rag.compose_answer(prior_user, sources, response_lang)[0] if sources else t(response_lang, "insufficient")
+        msg["language"] = response_lang
 
     center, right = st.columns([7.1, 2.9], gap="medium")
     with center:
@@ -751,13 +809,14 @@ def page_chat(lang: str, db: Database, rag: NyayMitraRAG) -> None:
             for i, msg in enumerate(st.session_state.messages):
                 # A one-letter avatar is treated as a media path by Streamlit.
                 # Use its built-in role avatar to avoid MediaFileStorageError.
+                message_lang = msg.get("language", lang)
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
                     if msg.get("sources"):
-                        render_sources(lang, msg["sources"])
+                        render_sources(message_lang, msg["sources"])
                     if msg["role"] == "assistant":
                         st.download_button(
-                            t(lang, "copy_answer"),
+                            t(message_lang, "copy_answer"),
                             data=msg["content"],
                             file_name="nyaya_mitra_answer.txt",
                             mime="text/plain",
@@ -777,11 +836,13 @@ def page_chat(lang: str, db: Database, rag: NyayMitraRAG) -> None:
                         result = rag.answer(question, lang)
                     answer = result.get("answer") or t(lang, "insufficient")
                     sources = result.get("sources") or []
+                    response_lang = result.get("language", rag._response_language(question, lang))
                 except Exception:
                     logger.exception("Chat answer failed")
-                    answer = t(lang, "error_generic")
+                    response_lang = rag._response_language(question, lang)
+                    answer = t(response_lang, "error_generic")
                     sources = []
-                st.session_state.messages.append({"role": "assistant", "content": answer, "sources": sources, "language": lang})
+                st.session_state.messages.append({"role": "assistant", "content": answer, "sources": sources, "language": response_lang})
                 if not config.PUBLIC_MODE:
                     db.add_message(st.session_state.chat_session_id, "assistant", answer, sources)
                 st.rerun()
@@ -1009,9 +1070,6 @@ def page_admin_portal(lang: str, auth_db: Database) -> None:
             if upload_col.button(t(lang, "upload"), use_container_width=True):
                 st.session_state.page = "upload"
                 st.rerun()
-        elif st.button(t(lang, "upload"), type="primary"):
-            st.session_state.page = "upload"
-            st.rerun()
         return
 
     _, auth_col, _ = st.columns([1, 1.1, 1])
@@ -1026,7 +1084,7 @@ def page_admin_portal(lang: str, auth_db: Database) -> None:
             submitted = st.form_submit_button(t(lang, "admin_portal_access"), type="primary", use_container_width=True)
         if submitted:
             clean_username = username.strip()
-            configured_username = (config.ADMIN_USERNAME or "admin").strip()
+            configured_username = config.ADMIN_USERNAME.strip()
             if not config.ADMIN_PASSWORD:
                 st.error(
                     "Admin login is not configured. Set ADMIN_USERNAME and ADMIN_PASSWORD in the app's Secrets, then restart it."
@@ -1062,14 +1120,14 @@ def page_admin(lang: str, db: Database, processor: DocumentProcessor, rag: NyayM
         f'<div class="panel hero"><h1>{t(lang, "admin_title")}</h1><p>{t(lang, "admin_intro")}</p></div>',
         unsafe_allow_html=True,
     )
-    counts = db.counts()
+    counts = processor.db.counts()
     c1, c2, c3 = st.columns(3)
     c1.metric(t(lang, "metric_docs"), counts["documents"])
     c2.metric(t(lang, "metric_chunks"), counts["chunks"])
     c3.metric(t(lang, "metric_llm"), t(lang, "yes") if openai_configured() else t(lang, "no"))
-    upload_form(lang, processor)
+    upload_form(lang, processor, rag)
     st.subheader(t(lang, "indexed_documents"))
-    docs = db.list_documents(active_only=True)
+    docs = processor.db.list_documents(active_only=True)
     if not docs:
         st.info(t(lang, "no_documents"))
     for doc in docs:
@@ -1099,17 +1157,20 @@ def page_admin(lang: str, db: Database, processor: DocumentProcessor, rag: NyayM
             if b1.button(t(lang, "reprocess"), key=f"re_{doc['id']}"):
                 try:
                     processor.reprocess(doc["id"])
-                    refresh_rag(db)
+                    rag.reload()
                     st.success(t(lang, "processed_ok"))
                     st.rerun()
                 except DocumentProcessingError as exc:
                     st.error(str(exc))
+                except Exception:
+                    logger.exception("Admin PDF reprocessing failed")
+                    st.error(t(lang, "processing_error"))
             if b2.button(t(lang, "remove"), key=f"rm_{doc['id']}"):
                 processor.remove(doc["id"])
-                refresh_rag(db)
+                rag.reload()
                 st.rerun()
     if st.button(t(lang, "rebuild_index"), type="primary"):
-        refresh_rag(db)
+        rag.reload()
         st.success(t(lang, "processed_ok"))
     st.subheader(t(lang, "quiz_management"))
     questions = db.quiz_questions()
@@ -1153,7 +1214,7 @@ def page_admin(lang: str, db: Database, processor: DocumentProcessor, rag: NyayM
         st.rerun()
 
 
-def upload_form(lang: str, processor: DocumentProcessor) -> None:
+def upload_form(lang: str, processor: DocumentProcessor, rag: NyayaMitraRAG) -> None:
     st.subheader(t(lang, "upload"))
     existing_docs = processor.db.list_documents(active_only=True)
     mode_options = [t(lang, "add_new_pdf")]
@@ -1207,20 +1268,25 @@ def upload_form(lang: str, processor: DocumentProcessor) -> None:
             version_or_date=version,
             document_id=str(selected_doc["id"]) if selected_doc else None,
         )
-        refresh_rag(processor.db)
+        rag.reload()
         st.success(f"{t(lang, 'processed_ok')} {record.get('chunk_count', 0)} {t(lang, 'chunks_created')}")
     except DocumentProcessingError as exc:
         st.error(str(exc))
+    except Exception:
+        logger.exception("PDF upload or indexing failed")
+        st.error(t(lang, "processing_error"))
 
 
 def page_upload(lang: str, processor: DocumentProcessor) -> None:
-    if not require_account(lang):
+    if not require_admin(lang):
         return
     st.markdown(
         f'<div class="panel hero"><h1>{t(lang, "upload")}</h1><p>{t(lang, "admin_intro")}</p></div>',
         unsafe_allow_html=True,
     )
-    upload_form(lang, processor)
+    profile_id = str(st.session_state.get("user_id") or "")
+    rag = get_rag(profile_id, get_db())
+    upload_form(lang, processor, rag)
 
 
 def main() -> None:
@@ -1248,9 +1314,20 @@ def main() -> None:
     elif page == "admin_portal":
         page_admin_portal(lang, auth_db)
     elif page == "admin":
-        page_admin(lang, db, processor, rag)
+        library_db = get_law_library_db()
+        if publish_legacy_admin_pdfs(db, library_db):
+            rag.reload()
+        shared_processor = DocumentProcessor(library_db, library_db.uploads_dir)
+        page_admin(lang, db, shared_processor, rag)
     elif page == "upload":
-        page_upload(lang, processor)
+        if st.session_state.is_admin:
+            library_db = get_law_library_db()
+            if publish_legacy_admin_pdfs(db, library_db):
+                rag.reload()
+            shared_processor = DocumentProcessor(library_db, library_db.uploads_dir)
+            page_upload(lang, shared_processor)
+        else:
+            require_admin(lang)
     else:
         page_home(lang, db, searcher)
 

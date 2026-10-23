@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from urllib.parse import urlparse
 from typing import Any, Callable, Optional
 
 import numpy as np
@@ -21,6 +22,7 @@ from config import (
     USE_EMBEDDINGS,
 )
 from database import Database
+from document_processor import is_contents_page, structure_headings
 from translations import t
 
 logger = logging.getLogger("nyaya.rag")
@@ -53,11 +55,74 @@ class NyayMitraRAG:
         self.model_name = EMBEDDING_MODEL
         self.encode_fn = encode_fn
         self._embedding_error = ""
+        self._loaded_revision: tuple[int, int] | None = None
         self.reload()
 
     def reload(self) -> None:
         self.items = self.db.active_chunks()
+        self._restore_structure_metadata()
         self._build_index()
+        self._loaded_revision = self._revision_signature()
+
+    def _revision_signature(self) -> tuple[int, int]:
+        local_revision = self.db.content_revision()
+        shared_revision = self.db.library_db.content_revision() if self.db.library_db else 0
+        return local_revision, shared_revision
+
+    def _refresh_if_stale(self) -> None:
+        if self._loaded_revision != self._revision_signature():
+            self.reload()
+
+    def _restore_structure_metadata(self) -> None:
+        """Recover section/chapter labels for databases indexed by older builds."""
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in self.items:
+            grouped.setdefault(str(row.get("document_id") or ""), []).append(row)
+        for rows in grouped.values():
+            rows.sort(key=lambda row: (
+                int(row.get("page_number") or 0) if str(row.get("page_number") or "").isdigit() else 0,
+                int(row.get("id") or 0) if str(row.get("id") or "").isdigit() else 0,
+            ))
+            section_number, section_title, provision_type = "unknown", "", "section"
+            chapter, chapter_title = "", ""
+            page_texts: dict[str, list[str]] = {}
+            for candidate in rows:
+                page_texts.setdefault(str(candidate.get("page_number") or ""), []).append(str(candidate.get("text") or ""))
+            contents_pages = {
+                page for page, texts in page_texts.items() if is_contents_page("\n".join(texts))
+            }
+            for row in rows:
+                if str(row.get("page_number") or "") in contents_pages:
+                    row["is_contents_page"] = True
+                    row["section_number"] = "unknown"
+                    row["section_title"] = "Arrangement of Sections"
+                    row["provision_type"] = "section"
+                    row["chapter"] = ""
+                    row["chapter_title"] = ""
+                    continue
+                row["is_contents_page"] = False
+                known_section = str(row.get("section_number") or "unknown")
+                if known_section.casefold() not in {"", "unknown", "none"}:
+                    section_number = known_section
+                    section_title = str(row.get("section_title") or section_title)
+                    provision_type = str(row.get("provision_type") or provision_type)
+                known_chapter = str(row.get("chapter") or "")
+                if known_chapter:
+                    chapter = known_chapter
+                    chapter_title = str(row.get("chapter_title") or chapter_title)
+                for _, kind, number, title in structure_headings(str(row.get("text") or "")):
+                    if kind == "chapter":
+                        chapter, chapter_title = number, title
+                    else:
+                        section_number, section_title = number, title
+                        provision_type = kind
+                if known_section.casefold() in {"", "unknown", "none"}:
+                    row["section_number"] = section_number
+                    row["section_title"] = section_title
+                row["provision_type"] = provision_type
+                if not known_chapter:
+                    row["chapter"] = chapter
+                    row["chapter_title"] = chapter_title
 
     def _get_embedder(self):
         if self.encode_fn is not None:
@@ -120,6 +185,40 @@ class NyayMitraRAG:
         )
 
     @staticmethod
+    def _authority_boost(item: dict[str, Any]) -> float:
+        """Use source provenance only as a small tie-breaker after relevance."""
+        score = 0.0
+        if str(item.get("verification_status") or "").casefold() == "verified":
+            score += 0.03
+        host = urlparse(str(item.get("source_url") or item.get("source") or "")).hostname or ""
+        host = host.casefold().rstrip(".")
+        if host == "indiacode.nic.in" or host.endswith(".gov.in") or host.endswith(".nic.in"):
+            score += 0.04
+        return score
+
+    @staticmethod
+    def _act_hint_boost(item: dict[str, Any], hint: str) -> float:
+        """Prefer a likely Act for topical queries without excluding other evidence."""
+        terms = {
+            "contract": ("contract",),
+            "it": ("information technology", "it act"),
+            "bnss": ("bharatiya nagarik suraksha",),
+            "crpc": ("criminal procedure", "crpc"),
+            "digital_evidence": ("bharatiya sakshya", "information technology"),
+            "consumer": ("consumer protection",),
+            "domestic_violence": ("domestic violence",),
+            "pocso": ("children from sexual", "pocso"),
+            "rti": ("right to information",),
+            "bns": ("bharatiya nyaya",),
+            "cpc": ("civil procedure", "cpc"),
+            "limitation": ("limitation",),
+            "sc_st": ("scheduled castes", "atrocities"),
+            "constitution": ("constitution",),
+        }.get(hint, ())
+        act_name = str(item.get("act_name") or "").casefold()
+        return 0.16 if terms and any(term in act_name for term in terms) else 0.0
+
+    @staticmethod
     def _matches_any_alias(query: str, aliases: tuple[str, ...]) -> bool:
         q = query.casefold()
         for alias in aliases:
@@ -134,6 +233,15 @@ class NyayMitraRAG:
 
     def _query_act_hint(self, query: str) -> str:
         q = query.casefold()
+        # A time-limit question about a civil suit ordinarily points to the
+        # Limitation Act, while CPC covers filing procedure and civil process.
+        if self._matches_any_alias(q, (
+            "limitation act", "period of limitation", "limitation period", "time limit",
+            "filing deadline", "time barred", "condonation of delay",
+            "परिसीमा अधिनियम", "सीमा अवधि", "समय सीमा", "मियाद कानून", "विलंब की माफी",
+            "కాలపరిమితి చట్టం", "కాలపరిమితి", "కాల పరిమితి", "ఆలస్య క్షమాపణ",
+        )):
+            return "limitation"
         if self._matches_any_alias(q, (
             "electronic records", "digital evidence", "electronic evidence",
             "bharatiya sakshya adhiniyam", "bsa", "indian evidence act", "section 63",
@@ -162,7 +270,7 @@ class NyayMitraRAG:
                 return "crpc"
             return "bnss"
         if self._matches_any_alias(q, (
-            "consumer protection", "consumer rights", "consumer complaint", "defective goods", "deficiency in service",
+            "consumer protection", "consumer rights", "consumer complaint", "consumer", "defective goods", "deficiency in service",
             "consumer dispute", "consumer forum", "consumer court",
             "उपभोक्ता संरक्षण", "उपभोक्ता अधिकार", "उपभोक्ता शिकायत", "दोषपूर्ण सामान", "दोषपूर्ण वस्तु", "सेवा में कमी",
             "వినియోగదారుల రక్షణ", "వినియోగదారుల హక్కులు", "వినియోగదారుల ఫిర్యాదు", "లోపభూయిష్ట వస్తువులు", "సేవా లోపం",
@@ -198,12 +306,6 @@ class NyayMitraRAG:
             "సివిల్ ప్రొసీజర్ కోడ్", "సిపిసి", "సివిల్ దావా", "సమన్లు",
         )):
             return "cpc"
-        if self._matches_any_alias(q, (
-            "limitation act", "period of limitation", "condonation of delay", "time barred",
-            "परिसीमा अधिनियम", "मियाद कानून", "विलंब की माफी",
-            "కాలపరిమితి చట్టం", "కాలపరిమితి", "ఆలస్య క్షమాపణ",
-        )):
-            return "limitation"
         if self._matches_any_alias(q, (
             "scheduled castes", "scheduled tribes", "prevention of atrocities", "sc st act", "atrocity",
             "अनुसूचित जाति और अनुसूचित जनजाति", "अत्याचार निवारण अधिनियम", "एससी एसटी एक्ट",
@@ -329,8 +431,62 @@ class NyayMitraRAG:
             results.append(x)
         return results
 
+    @staticmethod
+    def _needs_query_translation(query: str) -> bool:
+        return bool(re.search(r"[\u0900-\u097F\u0C00-\u0C7F]", query))
+
+    @staticmethod
+    def _response_language(query: str, preferred: str = "en") -> str:
+        """Prefer the language used in the question when it is Hindi or Telugu."""
+        if re.search(r"[\u0C00-\u0C7F]", query or ""):
+            return "te"
+        if re.search(r"[\u0900-\u097F]", query or ""):
+            return "hi"
+        return preferred if preferred in {"en", "hi", "te"} else "en"
+
+    def _expand_query_for_retrieval(self, query: str) -> str:
+        """Translate native-script questions into English retrieval terms when AI is configured."""
+        if not self._needs_query_translation(query):
+            return ""
+        client = self._llm()
+        if client is None:
+            return ""
+        try:
+            response = client.chat.completions.create(
+                model=os.getenv("LLM_MODEL", LLM_MODEL),
+                temperature=0,
+                max_tokens=160,
+                timeout=min(12, LLM_TIMEOUT_SECONDS),
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Translate the user's legal question into concise English search terms. "
+                            "Preserve named laws, dates, section numbers, and legal concepts. "
+                            "Return only the translated question and useful synonyms; do not answer it."
+                        ),
+                    },
+                    {"role": "user", "content": query[:MAX_QUERY_CHARS]},
+                ],
+            )
+            text = (response.choices[0].message.content or "").strip() if response and response.choices else ""
+            return re.sub(r"\s+", " ", text)[:800]
+        except Exception as exc:
+            logger.info("Multilingual retrieval expansion unavailable (%s)", type(exc).__name__)
+            return ""
+
+    @staticmethod
+    def _asks_for_contents(query: str) -> bool:
+        return bool(re.search(
+            r"\b(table of contents|arrangement of sections|list (?:all )?(?:the )?sections|section headings)\b|"
+            r"(?:सभी धाराओं की सूची|धाराओं की सूची|అన్ని సెక్షన్ల జాబితా|సెక్షన్ల జాబితా)",
+            query,
+            re.IGNORECASE,
+        ))
+
     def search(self, query: str, top_k: int = RETRIEVAL_TOP_K) -> list[dict[str, Any]]:
         query = (query or "").strip()[:MAX_QUERY_CHARS]
+        self._refresh_if_stale()
         if not query or not self.items:
             return []
         # Educational starter text is useful for quizzes, but is not a statute
@@ -338,13 +494,17 @@ class NyayMitraRAG:
         legal_items = [item for item in self.items if not self._is_educational_sample(item)]
         if not legal_items:
             return []
-        act_hint = self._query_act_hint(query)
+        translated_query = self._expand_query_for_retrieval(query)
+        act_hint = self._query_act_hint(query) or self._query_act_hint(translated_query)
+        include_contents = self._asks_for_contents(query) or self._asks_for_contents(translated_query)
 
         # FIR has a specific current provision in BNSS section 173. Prefer its
         # text directly so generic words cannot retrieve unrelated Acts.
         if act_hint == "bnss":
             fir_sources = []
             for item in legal_items:
+                if item.get("is_contents_page"):
+                    continue
                 act = str(item.get("act_name") or "").casefold()
                 text = str(item.get("text") or "").casefold()
                 if "bharatiya nagarik suraksha" not in act:
@@ -382,62 +542,52 @@ class NyayMitraRAG:
         section_req_match = re.search(r"\b(?:section|sec\.?|धारा|సెక్షన్)\s*(\d+[A-Za-z]?)", query, re.IGNORECASE)
         explicit_section_num = section_req_match.group(1).casefold() if section_req_match else ""
 
-        search_query = self._expanded_query(query, act_hint)
+        search_base = " ".join(part for part in (query, translated_query) if part)
+        search_query = self._expanded_query(search_base, act_hint)
         # Search broadly before filtering so seed examples cannot occupy the
         # result limit and crowd out actual Acts.
-        semantic = self._semantic_search(search_query, len(self.items))
-        keyword = self._keyword_search(
-            search_query, len(self.items), legal_items, min_score=0.18 if act_hint else 0.34
-        )
+        semantic: list[dict[str, Any]] = []
+        keyword: list[dict[str, Any]] = []
+        for candidate_query in dict.fromkeys((query, translated_query, search_query)):
+            if not candidate_query:
+                continue
+            semantic.extend(self._semantic_search(candidate_query, len(self.items)))
+            keyword.extend(self._keyword_search(
+                candidate_query,
+                len(self.items),
+                legal_items,
+                min_score=0.18 if act_hint or candidate_query != query else 0.34,
+            ))
         merged: dict[str, dict[str, Any]] = {}
         for row in keyword + semantic:
             key = str(row.get("chunk_key") or row.get("id"))
             if explicit_section_num:
                 row_sec = str(row.get("section_number") or row.get("section") or "").casefold()
-                if row_sec == explicit_section_num or re.search(rf"\b{re.escape(explicit_section_num)}\b", str(row.get("text") or "")):
+                if row_sec == explicit_section_num or re.search(
+                    rf"(?im)^\s*(?:(?:section|sec\.?|धारा|సెక్షన్)\s+)?{re.escape(explicit_section_num)}\.\s+",
+                    str(row.get("text") or ""),
+                ):
                     row = dict(row)
                     row["score"] = max(float(row.get("score") or 0), 1.0)
                     row["score_type"] = "explicit_section"
             prev = merged.get(key)
             if prev is None or float(row.get("score") or 0) > float(prev.get("score") or 0):
                 merged[key] = row
-        ranked = sorted(merged.values(), key=lambda z: float(z.get("score") or 0), reverse=True)
+        ranked = sorted(
+            merged.values(),
+            key=lambda row: (
+                float(row.get("score") or 0)
+                + self._authority_boost(row)
+                + self._act_hint_boost(row, act_hint)
+            ),
+            reverse=True,
+        )
         filtered = []
         for row in ranked:
             if self._is_educational_sample(row):
                 continue
-            if act_hint:
-                act_name = str(row.get("act_name") or "").casefold()
-                if act_hint == "contract" and "contract" not in act_name:
-                    continue
-                if act_hint == "it" and not any(term in act_name for term in ("information technology", "it act")):
-                    continue
-                if act_hint == "bnss" and "bharatiya nagarik suraksha" not in act_name:
-                    continue
-                if act_hint == "crpc" and not any(term in act_name for term in ("criminal procedure", "crpc")):
-                    continue
-                if act_hint == "digital_evidence" and not any(
-                    term in act_name for term in ("bharatiya sakshya", "information technology", "it act")
-                ):
-                    continue
-                if act_hint == "consumer" and "consumer" not in act_name:
-                    continue
-                if act_hint == "domestic_violence" and "domestic violence" not in act_name:
-                    continue
-                if act_hint == "pocso" and not any(term in act_name for term in ("children from sexual", "pocso")):
-                    continue
-                if act_hint == "rti" and "right to information" not in act_name:
-                    continue
-                if act_hint == "bns" and "bharatiya nyaya" not in act_name:
-                    continue
-                if act_hint == "cpc" and "civil procedure" not in act_name:
-                    continue
-                if act_hint == "limitation" and "limitation" not in act_name:
-                    continue
-                if act_hint == "sc_st" and not any(term in act_name for term in ("scheduled castes", "atrocities")):
-                    continue
-                if act_hint == "constitution" and "constitution" not in act_name:
-                    continue
+            if row.get("is_contents_page") and not include_contents:
+                continue
             stype = row.get("score_type")
             score = float(row.get("score") or 0)
             if stype == "cosine_similarity" and score < RELEVANCE_THRESHOLD:
@@ -460,7 +610,12 @@ class NyayMitraRAG:
             "section_number": section,
             "section_title": title,
             "title": title,
+            "provision_type": row.get("provision_type") or "section",
+            "chapter": row.get("chapter") or "",
+            "chapter_title": row.get("chapter_title") or "",
+            "is_contents_page": bool(row.get("is_contents_page")),
             "page_number": row.get("page_number") or "",
+            "original_filename": row.get("original_filename") or "",
             "text": row.get("text") or "",
             "source": row.get("source_url") or row.get("source") or "",
             "source_url": row.get("source_url") or row.get("source") or "",
@@ -488,9 +643,11 @@ class NyayMitraRAG:
             (
                 f"[SOURCE {i + 1}]\n"
                 f"Act: {s.get('act_name')}\n"
-                f"Section: {s.get('section_number') or s.get('section')}\n"
+                f"Provision ({s.get('provision_type') or 'section'}): {s.get('section_number') or s.get('section')}\n"
                 f"Title: {s.get('section_title') or ''}\n"
+                f"Chapter: {s.get('chapter') or ''} {s.get('chapter_title') or ''}\n"
                 f"Page: {s.get('page_number') or ''}\n"
+                f"PDF file: {s.get('original_filename') or ''}\n"
                 f"Source URL: {s.get('source_url') or s.get('source') or ''}\n"
                 f"Verification: {s.get('verification_status')}\n"
                 f"Language: {s.get('language')}\n"
@@ -588,12 +745,13 @@ The final answer must be readable entirely in {self._language_name(lang)} except
     def _fallback_answer(self, sources: list[dict[str, Any]], lang: str) -> str:
         if not sources:
             return self._no_source_answer(lang)
-        # Without a configured language model, do not pretend to translate or
-        # explain arbitrary statutory text. Give useful citations and the exact
-        # PDF location, and state clearly what capability needs configuration.
+        # Keep the offline mode useful: show short, exact passages with locations
+        # instead of making unsupported legal explanations or translations.
         parts = [t(lang, "answer_intro"), "", t(lang, "answer_retrieved_heading")]
         for i, s in enumerate(sources[:3], start=1):
-            section = s.get("section_number") or s.get("section") or "unknown"
+            section = s.get("section_number") or s.get("section") or t(lang, "unknown_section")
+            if str(section).casefold() == "unknown":
+                section = t(lang, "unknown_section")
             page = s.get("page_number") or ""
             page_bit = f", {t(lang, 'page').lower()} {page}" if page else ""
             parts.append(
@@ -610,6 +768,22 @@ The final answer must be readable entirely in {self._language_name(lang)} except
         if not explanation:
             explanation = t(lang, "answer_no_translation")
         parts.extend(["", t(lang, "answer_explanation_heading"), explanation, ""])
+        parts.append(t(lang, "answer_excerpt_label"))
+        for i, s in enumerate(sources[:3], start=1):
+            excerpt = re.sub(r"\s+", " ", str(s.get("text") or "")).strip()
+            if len(excerpt) > 420:
+                excerpt = excerpt[:417].rsplit(" ", 1)[0] + "..."
+            section = s.get("section_number") or s.get("section") or t(lang, "unknown_section")
+            if str(section).casefold() == "unknown":
+                section = t(lang, "unknown_section")
+            provision_label = t(lang, "article") if s.get("provision_type") == "article" else t(lang, "section")
+            location = f"{s.get('act_name')} — {provision_label} {section}"
+            if s.get("section_title"):
+                location += f": {s.get('section_title')}"
+            if s.get("page_number"):
+                location += f" · {t(lang, 'page')} {s.get('page_number')}"
+            parts.extend([f"{i}. {location}", f"> {excerpt}"])
+        parts.append("")
         parts.extend([t(lang, "answer_next_steps_heading"), t(lang, "answer_next_steps"), ""])
         parts.extend([t(lang, "answer_limits_heading"), t(lang, "answer_limits"), "", t(lang, "answer_sources_heading")])
         for s in sources[:5]:
@@ -620,6 +794,7 @@ The final answer must be readable entirely in {self._language_name(lang)} except
 
     def compose_answer(self, query: str, sources: list[dict[str, Any]], lang: str = "en") -> tuple[str, bool]:
         """Create a localized answer from already-retrieved evidence."""
+        lang = self._response_language(query, lang)
         if not sources:
             return t(lang, "insufficient"), False
         client = self._llm()
@@ -649,7 +824,11 @@ The final answer must be readable entirely in {self._language_name(lang)} except
                     "act_name": s.get("act_name"),
                     "section_number": s.get("section_number") or s.get("section"),
                     "section_title": s.get("section_title") or "",
+                    "provision_type": s.get("provision_type") or "section",
+                    "chapter": s.get("chapter") or "",
+                    "chapter_title": s.get("chapter_title") or "",
                     "page_number": s.get("page_number") or "",
+                    "original_filename": s.get("original_filename") or "",
                     "source_url": s.get("source_url") or s.get("source") or "",
                     "verification_status": s.get("verification_status"),
                     "score": s.get("score"),
@@ -663,12 +842,14 @@ The final answer must be readable entirely in {self._language_name(lang)} except
 
     def answer(self, query: str, lang: str = "en", top_k: int = RETRIEVAL_TOP_K) -> dict[str, Any]:
         query = (query or "").strip()[:MAX_QUERY_CHARS]
+        lang = self._response_language(query, lang)
         if not query:
             return {
                 "answer": self._no_source_answer(lang),
                 "sources": [],
                 "mode": "insufficient",
                 "llm_used": False,
+                "language": lang,
             }
         sources = self.search(query, top_k)
         if not sources:
@@ -677,6 +858,7 @@ The final answer must be readable entirely in {self._language_name(lang)} except
                 "sources": [],
                 "mode": "insufficient",
                 "llm_used": False,
+                "language": lang,
             }
 
         answer, llm_used = self.compose_answer(query, sources, lang)
@@ -686,6 +868,7 @@ The final answer must be readable entirely in {self._language_name(lang)} except
             "sources": self._citations_from_sources(sources),
             "mode": "llm" if llm_used else "extractive",
             "llm_used": llm_used,
+            "language": lang,
         }
 
     def status(self) -> dict[str, Any]:

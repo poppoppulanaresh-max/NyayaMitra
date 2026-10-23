@@ -8,11 +8,12 @@ Answers are limited to retrieved passages. If the indexed documents are insuffic
 
 - Home library updates, Act name/Act number search, indexed PDF browsing, chat assistant, quiz, and admin upload
 - English, Hindi, and Telugu **interface** labels (legal quotations stay in the source language)
-- PDF ingestion with SHA-256 duplicate detection, page numbers, conservative section detection, and FAISS retrieval when embeddings load
-- Extractive answers when no LLM API key is configured
+- PDF ingestion with SHA-256 duplicate detection, page numbers, chapter/section detection (including bare numbered headings), and FAISS retrieval when embeddings load
+- Offline retrieval across all indexed Acts and cited source excerpts when no LLM API key is configured
+- Optional multilingual query expansion before retrieval, followed by source-grounded answer generation and Hindi/Telugu translation when an OpenAI-compatible API key is configured
 - Optional OpenAI-compatible RAG with timeout and extractive fallback
 - SQLite persistence for documents, chunks, chats, quiz attempts, and PBKDF2 password hashes
-- Administrator-only sign-in with a separate profile database and PDF folder for uploaded laws
+- One configured administrator login, with admin-uploaded PDFs stored in the shared law library
 - Admin-managed quiz questions with validation, editing, and removal
 - Act-specific quiz rounds generated from uploaded PDF section openings: 10 questions per set, fresh sections in the next set, completion tracking for the active app session, and retakes
 - Administrator sign-in (PBKDF2 password hashing). Admin pages are hidden and server-checked; signed-in accounts can manage their own PDFs
@@ -67,7 +68,7 @@ streamlit run app.py
 
 Or double-click `run_windows.bat`. The batch file creates `.venv` if needed, installs dependencies, copies `.env.example` to `.env` when `.env` is missing, and starts Streamlit. If a step fails it prints the error and waits.
 
-The app uses offline keyword retrieval by default so startup does not wait for a model download. To use semantic retrieval, set `NYAYA_USE_EMBEDDINGS=1` in `.env`; the first launch then downloads `intfloat/multilingual-e5-small` (internet required that one time). If the download fails, the app falls back to keyword search. The interface uses system fonts and does not need Google Fonts to load.
+The app uses offline keyword retrieval by default so startup does not wait for a model download. To use multilingual semantic retrieval without an AI API, set `NYAYA_USE_EMBEDDINGS=1` in `.env`; the first launch then loads/downloads `intfloat/multilingual-e5-small` (internet required if it is not cached). If model loading fails, the app falls back to keyword search. A configured `OPENAI_API_KEY` also enables general Telugu/Hindi-to-English query expansion before searching English PDFs. Without either capability, cross-language matching is limited; the app still shows exact retrieved source passages and must not claim universal multilingual coverage. The interface uses system fonts and does not need Google Fonts to load.
 
 ## Administrator access
 
@@ -102,13 +103,13 @@ Tests use synthetic PDFs and mocked LLM clients. They do not need a paid API key
 
 ## Persistence model
 
-The administrator hash is in `data/nyay_mitra.db`. Bundled Acts are indexed once in the shared `data/law_library/` database; each account's chat history and uploaded PDFs remain in its own `data/profiles/<user-id>/` folder. These runtime files are ignored by git. On a shared computer, protect the data directory; local app profiles do not replace operating-system file permissions.
+The administrator hash is in `data/nyay_mitra.db`. Bundled Acts and PDFs uploaded through the Admin Portal are stored in the shared `data/law_library/` database and `data/law_library/uploads/` folder. Admin uploads are visible on Home and Browse Laws and available to every visitor's assistant. Chat history remains under the signed-in profile when history is enabled. These runtime files are ignored by git.
 
 ## Free public demo deployment (Streamlit Community Cloud)
 
 The app can run on Streamlit Community Cloud without a paid server plan. Connect the GitHub repository `poppoppulanaresh-max/NyayaMitra`, choose the `main` branch and `app.py` as the entrypoint, then add the values from `streamlit-secrets.example.toml` under **App settings → Secrets**. At minimum, set `NYAYA_PUBLIC_MODE = "1"`. Choose a unique `ADMIN_PASSWORD`; do not paste a real password into this repository. The `.streamlit/secrets.toml` file is ignored by Git if you create it locally.
 
-`OPENAI_API_KEY` is optional. Without it, the app uses its offline source-based answer mode and cannot translate arbitrary retrieved legal passages. If you add a key, questions and retrieved legal excerpts are sent to that AI provider to generate answers and translations. Tell visitors this and advise them not to enter private or sensitive case details.
+Set `ADMIN_USERNAME = "NyayaMitra"` and set `ADMIN_PASSWORD` in the private Secrets panel to the password you intend to use. The repository example contains a placeholder only. `OPENAI_API_KEY` is optional. Without it, the app uses offline retrieval and shows cited PDF excerpts; arbitrary passages are not translated or paraphrased. If you add a key, non-English questions may be expanded into English search terms, and questions plus retrieved legal excerpts are sent to that AI provider to generate answers and translations. Tell visitors this and advise them not to enter private or sensitive case details.
 
 Streamlit Community Cloud uses an ephemeral local filesystem. PDFs committed in `uploads/` are included with the app and can be re-indexed after restart, but account databases and user-uploaded PDFs are not durable and may be lost on restart or redeploy. Public mode avoids keeping chat/search/quiz histories. Keep a separate copy of source PDFs. For persistent account uploads and databases, use the paid disk-backed Render configuration below.
 
@@ -116,11 +117,11 @@ Streamlit Community Cloud uses an ephemeral local filesystem. PDFs committed in 
 
 `render.yaml` configures one Render web service with a persistent disk mounted at `/var/data`. This is required: Render's free web service filesystem is ephemeral, and uploaded laws and the SQLite database would disappear on restart. The Blueprint uses a paid Starter web service and a 1 GB persistent disk; review current plan and storage charges in Render before creating it. A disk-backed service is single-instance and may briefly stop during deploys.
 
-Before pushing the repository, place the text-based public law PDFs you want included in `uploads/`. PDFs in that folder are intentionally eligible for Git tracking, so they will be visible in the public repository. Never add `.env`, API keys, the SQLite `.db` file, private documents, or personal data. On first service start, Nyaya Mitra extracts and indexes the bundled starter PDFs once into the shared library under `/var/data/data/law_library/`; profile databases keep account-specific history and uploads under `/var/data/data/profiles/`. Later admin uploads are saved in the signed-in administrator's profile on that persistent volume. The PDFs must be committed to Git for first-deploy seeding.
+Before pushing the repository, place the text-based public law PDFs you want included in `uploads/`. PDFs in that folder are intentionally eligible for Git tracking, so they will be visible in the public repository. Never add `.env`, API keys, the SQLite `.db` file, private documents, or personal data. On first service start, Nyaya Mitra extracts and indexes the bundled starter PDFs once into the shared library under `/var/data/data/law_library/`. Admin uploads are saved in the shared library and immediately available to every visitor; the persistent disk keeps those PDFs and their index across restarts. The PDFs must be committed to Git for first-deploy seeding.
 
-Create a new Render Blueprint from your GitHub repository and select `render.yaml`. Set the prompted `ADMIN_PASSWORD` to a unique strong password. `OPENAI_API_KEY` is optional; without it, the app uses its offline source-based answer mode and cannot automatically translate arbitrary answers. If supplied, public users' questions and retrieved excerpts are sent to the configured AI provider to generate answers.
+Create a new Render Blueprint from your GitHub repository and select `render.yaml`. The configured username is `NyayaMitra`; set the prompted `ADMIN_PASSWORD` to the password you want to use. `OPENAI_API_KEY` is optional; without it, the app uses offline retrieval and displays cited PDF excerpts, but it cannot automatically translate arbitrary answers. If supplied, native-script questions can be expanded into English search terms, and public users' questions plus retrieved excerpts are sent to the configured AI provider to generate answers.
 
-The Blueprint enables `NYAYA_PUBLIC_MODE=1`: chat messages, search terms, and quiz answers are not saved as history. Account records, account-specific PDF libraries, and uploaded files remain on the persistent disk. This is still a single-instance public prototype, not a production legal service; back up the persistent volume and verify legal texts and amendments against official sources.
+The Blueprint enables `NYAYA_PUBLIC_MODE=1`: chat messages, search terms, and quiz answers are not saved as history. The admin account database, shared PDF library, and uploaded files remain on the persistent disk. This is still a single-instance public prototype, not a production legal service; back up the persistent volume and verify legal texts and amendments against official sources.
 
 ## Troubleshooting
 
@@ -129,7 +130,7 @@ The Blueprint enables `NYAYA_PUBLIC_MODE=1`: chat messages, search terms, and qu
 | `python` not found | Install Python 3.10/3.11 and tick “Add python to PATH”. |
 | `faiss-cpu` install fails | Confirm you are in `.venv` and using 64-bit Python. |
 | Embedding model download hangs | Check internet, or set `NYAYA_USE_EMBEDDINGS=0`. |
-| Admin sign-in always fails | Confirm `.env` has `ADMIN_PASSWORD`, then restart. Delete `data/nyay_mitra.db` only if you accept losing local data. |
+| Admin sign-in always fails | Confirm `ADMIN_USERNAME` is `NyayaMitra` and `ADMIN_PASSWORD` is set in `.env` or deployment Secrets, then restart the app. |
 | Scanned PDF rejected | Provide a text-based PDF. OCR is not in this project. |
 | LLM answers not appearing | Expected without `OPENAI_API_KEY`. Extractive answers still run. |
 

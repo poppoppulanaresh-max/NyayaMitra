@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def utc_now() -> str:
@@ -76,6 +76,9 @@ class Database:
                     act_name TEXT,
                     section_number TEXT,
                     section_title TEXT,
+                    provision_type TEXT,
+                    chapter TEXT,
+                    chapter_title TEXT,
                     page_number TEXT,
                     source_url TEXT,
                     language TEXT,
@@ -85,6 +88,12 @@ class Database:
                     FOREIGN KEY(document_id) REFERENCES documents(id)
                 )"""
             )
+            chunk_columns = {
+                str(row["name"]) for row in con.execute("PRAGMA table_info(chunks)").fetchall()
+            }
+            for column in ("provision_type", "chapter", "chapter_title"):
+                if column not in chunk_columns:
+                    con.execute(f"ALTER TABLE chunks ADD COLUMN {column} TEXT")
             con.execute(
                 """CREATE TABLE IF NOT EXISTS chat_sessions (
                     id TEXT PRIMARY KEY,
@@ -162,6 +171,29 @@ class Database:
                 "INSERT OR REPLACE INTO schema_meta(key, value) VALUES(?, ?)",
                 ("version", str(SCHEMA_VERSION)),
             )
+            con.execute(
+                "INSERT OR IGNORE INTO schema_meta(key, value) VALUES(?, ?)",
+                ("content_revision", "0"),
+            )
+
+    @staticmethod
+    def _bump_content_revision(con: sqlite3.Connection) -> None:
+        row = con.execute(
+            "SELECT value FROM schema_meta WHERE key = 'content_revision'"
+        ).fetchone()
+        revision = int(row["value"]) + 1 if row else 1
+        con.execute(
+            "INSERT INTO schema_meta(key, value) VALUES('content_revision', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (str(revision),),
+        )
+
+    def content_revision(self) -> int:
+        with self.connect() as con:
+            row = con.execute(
+                "SELECT value FROM schema_meta WHERE key = 'content_revision'"
+            ).fetchone()
+        return int(row["value"]) if row else 0
 
     def _migrate_legacy_quiz(self, con: sqlite3.Connection) -> None:
         row = con.execute(
@@ -258,15 +290,18 @@ class Database:
             for i, item in enumerate(items):
                 con.execute(
                     """INSERT OR IGNORE INTO chunks
-                    (chunk_key, document_id, act_name, section_number, section_title, page_number,
-                     source_url, language, verification_status, text, active)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)""",
+                    (chunk_key, document_id, act_name, section_number, section_title, provision_type,
+                     chapter, chapter_title, page_number, source_url, language, verification_status, text, active)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)""",
                     (
                         f"seed-{item.get('id', i)}",
                         doc_id,
                         item.get("act_name") or "Unknown",
                         item.get("section") or "unknown",
                         item.get("title") or "",
+                        item.get("provision_type") or "section",
+                        item.get("chapter") or "",
+                        item.get("chapter_title") or "",
                         item.get("page") or "",
                         item.get("source") or "",
                         item.get("language") or "en",
@@ -389,6 +424,7 @@ class Database:
                 f"ON CONFLICT(id) DO UPDATE SET {assignments}",
                 values,
             )
+            self._bump_content_revision(con)
 
     def replace_chunks(self, document_id: str, chunks: list[dict[str, Any]]) -> None:
         with self.connect() as con:
@@ -396,15 +432,18 @@ class Database:
             for ch in chunks:
                 con.execute(
                     """INSERT INTO chunks
-                    (chunk_key, document_id, act_name, section_number, section_title, page_number,
-                     source_url, language, verification_status, text, active)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)""",
+                    (chunk_key, document_id, act_name, section_number, section_title, provision_type,
+                     chapter, chapter_title, page_number, source_url, language, verification_status, text, active)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)""",
                     (
                         ch["chunk_key"],
                         document_id,
                         ch.get("act_name"),
                         ch.get("section_number") or "unknown",
                         ch.get("section_title") or "",
+                        ch.get("provision_type") or "section",
+                        ch.get("chapter") or "",
+                        ch.get("chapter_title") or "",
                         ch.get("page_number") or "",
                         ch.get("source_url") or "",
                         ch.get("language") or "en",
@@ -412,6 +451,44 @@ class Database:
                         ch.get("text") or "",
                     ),
                 )
+            self._bump_content_revision(con)
+
+    def save_document_index(self, record: dict[str, Any], chunks: list[dict[str, Any]]) -> None:
+        """Atomically replace one document record and its chunks."""
+        keys = [
+            "id", "original_filename", "stored_filename", "act_name", "source_url",
+            "language", "version_or_date", "upload_date", "file_hash", "extraction_status",
+            "verification_status", "indexing_status", "processing_error", "page_count",
+            "chunk_count", "active",
+        ]
+        placeholders = ",".join("?" for _ in keys)
+        assignments = ",".join(f"{key}=excluded.{key}" for key in keys if key != "id")
+        values = [record.get(key) for key in keys]
+        if record.get("active") is None:
+            values[keys.index("active")] = 1
+        with self.connect() as con:
+            con.execute(
+                f"INSERT INTO documents ({','.join(keys)}) VALUES ({placeholders}) "
+                f"ON CONFLICT(id) DO UPDATE SET {assignments}",
+                values,
+            )
+            con.execute("DELETE FROM chunks WHERE document_id = ?", (record["id"],))
+            for chunk in chunks:
+                con.execute(
+                    """INSERT INTO chunks
+                    (chunk_key, document_id, act_name, section_number, section_title, provision_type,
+                     chapter, chapter_title, page_number, source_url, language, verification_status, text, active)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)""",
+                    (
+                        chunk["chunk_key"], record["id"], chunk.get("act_name"),
+                        chunk.get("section_number") or "unknown", chunk.get("section_title") or "",
+                        chunk.get("provision_type") or "section", chunk.get("chapter") or "",
+                        chunk.get("chapter_title") or "", chunk.get("page_number") or "",
+                        chunk.get("source_url") or "", chunk.get("language") or "en",
+                        chunk.get("verification_status") or "unverified_upload", chunk.get("text") or "",
+                    ),
+                )
+            self._bump_content_revision(con)
 
     def deactivate_document(self, document_id: str) -> None:
         # A profile can hide a shared library item without changing the common
@@ -429,11 +506,14 @@ class Database:
         with self.connect() as con:
             con.execute("UPDATE documents SET active = 0, indexing_status = ? WHERE id = ?", ("removed", document_id))
             con.execute("UPDATE chunks SET active = 0 WHERE document_id = ?", (document_id,))
+            self._bump_content_revision(con)
 
     def active_chunks(self) -> list[dict[str, Any]]:
         with self.connect() as con:
             rows = con.execute(
-                "SELECT * FROM chunks WHERE active = 1 AND length(trim(text)) > 0 ORDER BY id"
+                "SELECT c.*, d.original_filename FROM chunks c "
+                "LEFT JOIN documents d ON d.id = c.document_id "
+                "WHERE c.active = 1 AND length(trim(c.text)) > 0 ORDER BY c.document_id, c.id"
             ).fetchall()
             local_chunks = [dict(r) for r in rows]
             local_docs = con.execute("SELECT id, file_hash FROM documents").fetchall()

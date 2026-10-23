@@ -20,9 +20,17 @@ from database import Database, utc_now
 
 logger = logging.getLogger("nyaya.document_processor")
 
-SECTION_RE = re.compile(
-    r"(?:(?:Section|Sec\.?|धारा|సెక్షన్)\s+)(\d+[A-Za-z]?)\s*[.\-–:]?\s*([^\n]{0,120})",
-    re.IGNORECASE,
+CHAPTER_RE = re.compile(
+    r"(?i)\bCHAPTER\s+([IVXLCDM]+|\d+[A-Z]?)\b"
+)
+SECTION_PATTERNS = (
+    re.compile(
+        r"(?i)(?:^|\s)(?:Section|Sec\.?|Article|Art\.?|धारा|अनुच्छेद|సెక్షన్|ఆర్టికల్)\s+(\d{1,3}[A-Za-z]?)\s*[.\-–:]?\s*([^\n]{0,160})"
+    ),
+    # Many Indian Acts print section headings as “10. What agreements are
+    # contracts” without the word “Section”. Requiring a line start and a
+    # capitalized title avoids treating subsection numbers and dates as Acts.
+    re.compile(r"(?<![\w.])(\d{1,3}[A-Za-z]?)\.\s+([A-Z][^.\n—–:?!\ufffd]{2,160})"),
 )
 
 
@@ -65,15 +73,75 @@ def normalize_whitespace(text: str) -> str:
 
 
 def infer_section(text: str) -> tuple[str, str]:
-    match = SECTION_RE.search(text)
-    if not match:
+    headings = [event for event in structure_headings(text) if event[1] in {"section", "article"}]
+    if not headings:
         return "unknown", ""
-    number = match.group(1).strip()
-    title = (match.group(2) or "").strip()
-    title = re.sub(r"\s+", " ", title)
+    _, _, number, title = headings[0]
     if len(title) > 120:
         title = title[:117] + "..."
     return number, title
+
+
+def clean_heading_title(value: str) -> str:
+    title = re.sub(r"\s+", " ", value or "").strip()
+    title = re.split(r"\s+[—–-]\s*|[.?!\ufffd]", title, maxsplit=1)[0]
+    return title.strip(" .?!-–—")
+
+
+def structure_headings(text: str) -> list[tuple[int, str, str, str]]:
+    """Return ordered chapter/section headings detected in extracted Act text."""
+    events: list[tuple[int, str, str, str]] = []
+    section_positions = [match.start() for pattern in SECTION_PATTERNS for match in pattern.finditer(text or "")]
+    for match in CHAPTER_RE.finditer(text or ""):
+        following_section = min((position for position in section_positions if position > match.end()), default=None)
+        raw_title = (text or "")[match.end():following_section] if following_section is not None else (text or "")[match.end():match.end() + 160]
+        title = re.sub(r"\s+", " ", raw_title.strip())[:160]
+        if not title:
+            following = []
+            for line in (text or "")[match.end():].splitlines()[:4]:
+                line = re.sub(r"\s+", " ", line).strip()
+                if not line or line.casefold() in {"sections", "section"}:
+                    continue
+                letters = [character for character in line if character.isalpha()]
+                if letters and sum(character.isupper() for character in letters) / len(letters) >= 0.75:
+                    following.append(line)
+                else:
+                    break
+            title = " ".join(following)[:160]
+        events.append((match.start(), "chapter", match.group(1).strip(), title))
+    for pattern in SECTION_PATTERNS:
+        for match in pattern.finditer(text or ""):
+            prefix = (text or "")[max(0, match.start() - 24):match.start()]
+            is_article_heading = bool(re.match(
+                r"\s*(?:article|art\.?|अनुच्छेद|ఆర్టికల్)", match.group(0), re.IGNORECASE
+            )) or bool(re.search(r"(?:article|art\.?|अनुच्छेद|ఆర్టికల్)\s*$", prefix, re.IGNORECASE))
+            # The numeric fallback also sees the number inside “Article 21.”;
+            # keep the explicit heading classification instead of downgrading it.
+            if is_article_heading and not re.match(r"\s*(?:article|art\.?|अनुच्छेद|ఆర్టికల్)", match.group(0), re.IGNORECASE):
+                continue
+            provision_type = "article" if is_article_heading else "section"
+            title = clean_heading_title(match.group(2) or "")[:160]
+            if provision_type == "section" and re.match(
+                r"(?i)(?:for the statement of objects|subs?\.? by act|ins\.? by act|"
+                r"omitted by act|the words .* omitted|the enactments mentioned|see gazette|vide act)",
+                title,
+            ):
+                continue
+            events.append((match.start(), provision_type, match.group(1).strip(), title))
+    # Explicit and bare patterns may both detect a labelled heading.
+    unique: dict[tuple[int, str, str], tuple[int, str, str, str]] = {}
+    for event in events:
+        unique[(event[0], event[1], event[2])] = event
+    return sorted(unique.values(), key=lambda event: event[0])
+
+
+def is_contents_page(text: str) -> bool:
+    """Detect section indexes so their numbered entries are not cited as provisions."""
+    sample = (text or "")[:700]
+    if re.search(r"arrangement\s+of\s+sections|table\s+of\s+contents|\bcontents\b", sample, re.IGNORECASE):
+        return True
+    section_index = re.search(r"(?im)^\s*SECTIONS\s*$", sample)
+    return bool(section_index and len(structure_headings(text)) >= 3)
 
 
 def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
@@ -140,27 +208,60 @@ def extract_pages(data: bytes) -> list[tuple[int, str]]:
 
 def pages_to_chunks(pages: list[tuple[int, str]], meta: dict[str, Any]) -> list[dict[str, Any]]:
     chunks: list[dict[str, Any]] = []
+    current_section, current_section_title, current_provision_type = "unknown", "", "section"
+    current_chapter, current_chapter_title = "", ""
     for page_no, page_text in pages:
-        parts = chunk_text(page_text) if page_text else []
-        for offset, part in enumerate(parts):
-            section_number, section_title = infer_section(part)
-            chunk_key = hashlib.sha256(
-                f"{meta['document_id']}|{page_no}|{offset}|{part}".encode("utf-8")
-            ).hexdigest()
-            chunks.append(
-                {
-                    "chunk_key": chunk_key,
-                    "document_id": meta["document_id"],
-                    "act_name": meta.get("act_name") or "",
-                    "section_number": section_number,
-                    "section_title": section_title or meta.get("section_title") or "",
-                    "page_number": str(page_no),
-                    "source_url": meta.get("source_url") or "",
-                    "language": meta.get("language") or "en",
-                    "verification_status": meta.get("verification_status") or "unverified_upload",
-                    "text": part,
-                }
-            )
+        contents_page = is_contents_page(page_text)
+        headings = [] if contents_page else structure_headings(page_text)
+        if contents_page:
+            current_section, current_section_title = "unknown", "Arrangement of Sections"
+            current_chapter, current_chapter_title = "", ""
+        section_events = [event for event in headings if event[1] in {"section", "article"}]
+        segment_starts = [0] + [event[0] for event in section_events[1:]]
+        segment_ends = segment_starts[1:] + [len(page_text)]
+        offset = 0
+        for segment_start, segment_end in zip(segment_starts, segment_ends):
+            segment = page_text[segment_start:segment_end]
+            parts = chunk_text(segment) if segment else []
+            cursor = segment_start
+            for part in parts:
+                part_start = page_text.find(part, cursor)
+                if part_start < 0 or part_start >= segment_end:
+                    part_start = cursor
+                part_end = min(segment_end, part_start + len(part))
+                cursor = part_end
+                for heading_start, kind, number, title in headings:
+                    if heading_start >= part_end:
+                        break
+                    if kind == "chapter":
+                        current_chapter = number
+                        current_chapter_title = title
+                    else:
+                        current_section = number
+                        current_section_title = title
+                        current_provision_type = kind
+                chunk_key = hashlib.sha256(
+                    f"{meta['document_id']}|{page_no}|{offset}|{part}".encode("utf-8")
+                ).hexdigest()
+                chunks.append(
+                    {
+                        "chunk_key": chunk_key,
+                        "document_id": meta["document_id"],
+                        "act_name": meta.get("act_name") or "",
+                        "section_number": current_section,
+                        "section_title": current_section_title or meta.get("section_title") or "",
+                        "provision_type": current_provision_type,
+                        "chapter": current_chapter,
+                        "chapter_title": current_chapter_title,
+                        "page_number": str(page_no),
+                        "original_filename": meta.get("original_filename") or "",
+                        "source_url": meta.get("source_url") or "",
+                        "language": meta.get("language") or "en",
+                        "verification_status": meta.get("verification_status") or "unverified_upload",
+                        "text": part,
+                    }
+                )
+                offset += 1
     return chunks
 
 
@@ -236,38 +337,48 @@ class DocumentProcessor:
             "source_url": resolved_source_url,
             "language": resolved_language,
             "verification_status": verification_status,
+            "original_filename": Path(filename).name,
         }
 
         chunks = pages_to_chunks(pages, candidate_meta)
         if not chunks:
             raise DocumentProcessingError("No usable text chunks were produced.", "ocr_needed")
 
-        # Now that extraction and chunking succeeded, write the file to storage.
+        # Write the content-addressed file only after extraction and chunking have
+        # succeeded, then replace its database row and chunks in one transaction.
+        # Updates use a new hash-derived filename, so the old PDF remains intact
+        # until the new file and index are ready.
         dest = self.uploads_dir / stored_name
-        dest.write_bytes(data)
+        existed_before = dest.exists()
+        try:
+            dest.write_bytes(data)
 
-        record = {
-            "id": doc_id,
-            "document_id": doc_id,
-            "original_filename": Path(filename).name,
-            "stored_filename": stored_name,
-            "act_name": resolved_act_name,
-            "source_url": resolved_source_url,
-            "language": resolved_language,
-            "version_or_date": resolved_version,
-            "upload_date": utc_now(),
-            "file_hash": digest,
-            "extraction_status": "ok",
-            "verification_status": verification_status,
-            "indexing_status": "indexed",
-            "processing_error": None,
-            "page_count": len(pages),
-            "chunk_count": len(chunks),
-            "active": 1,
-        }
+            record = {
+                "id": doc_id,
+                "document_id": doc_id,
+                "original_filename": Path(filename).name,
+                "stored_filename": stored_name,
+                "act_name": resolved_act_name,
+                "source_url": resolved_source_url,
+                "language": resolved_language,
+                "version_or_date": resolved_version,
+                "upload_date": utc_now(),
+                "file_hash": digest,
+                "extraction_status": "ok",
+                "verification_status": verification_status,
+                "indexing_status": "indexed",
+                "processing_error": None,
+                "page_count": len(pages),
+                "chunk_count": len(chunks),
+                "active": 1,
+            }
 
-        self.db.upsert_document(record)
-        self.db.replace_chunks(doc_id, chunks)
+            self.db.save_document_index(record, chunks)
+        except Exception:
+            if not existed_before:
+                # The record transaction rolled back; remove the new orphan file.
+                dest.unlink(missing_ok=True)
+            raise
         logger.info("Indexed document %s with %s chunks", doc_id, len(chunks))
         return record
 
