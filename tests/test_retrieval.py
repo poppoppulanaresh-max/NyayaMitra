@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from config import INSUFFICIENT_EVIDENCE_MESSAGE
 from legal_search import LegalSearch
 from tests.pdf_builder import text_pdf_bytes
@@ -7,6 +9,28 @@ from tests.pdf_builder import text_pdf_bytes
 
 def _ingest(processor, name, text, act):
     return processor.ingest(name, text_pdf_bytes(text), act_name=act, source_url="https://example.test/fixture")
+
+
+def test_revision_signature_supports_legacy_database_objects(tmp_path):
+    from rag_engine import NyayMitraRAG
+
+    profile_db = tmp_path / "profile.db"
+    library_db = tmp_path / "library.db"
+    profile_db.write_bytes(b"profile")
+    library_db.write_bytes(b"library")
+    legacy_db = SimpleNamespace(
+        db_path=profile_db,
+        library_db=SimpleNamespace(db_path=library_db),
+    )
+    rag = object.__new__(NyayMitraRAG)
+    rag.db = legacy_db
+
+    before = rag._revision_signature()
+    with library_db.open("ab") as file:
+        file.write(b"updated")
+    after = rag._revision_signature()
+
+    assert before != after
 
 
 def test_exact_section_and_act_keyword(processor, rag, db):

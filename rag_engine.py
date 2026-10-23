@@ -64,9 +64,35 @@ class NyayMitraRAG:
         self._build_index()
         self._loaded_revision = self._revision_signature()
 
-    def _revision_signature(self) -> tuple[int, int]:
-        local_revision = self.db.content_revision()
-        shared_revision = self.db.library_db.content_revision() if self.db.library_db else 0
+    @staticmethod
+    def _database_revision(db: Any) -> tuple[Any, ...]:
+        """Read an explicit revision when available; support older DB objects too."""
+        if db is None:
+            return ("none",)
+        revision_reader = getattr(db, "content_revision", None)
+        if callable(revision_reader):
+            try:
+                return ("revision", int(revision_reader()))
+            except Exception:
+                # A database created by an older release may not have schema_meta yet.
+                logger.debug("Could not read database content revision; using file state")
+        db_path = getattr(db, "db_path", None)
+        if db_path:
+            # Older cached Database instances may not implement content_revision.
+            # SQLite can keep writes in its WAL, so include both files in the fallback.
+            state: list[Any] = ["file"]
+            for path in (os.fspath(db_path), f"{os.fspath(db_path)}-wal"):
+                try:
+                    stat = os.stat(path)
+                    state.extend((stat.st_mtime_ns, stat.st_size))
+                except OSError:
+                    state.extend((0, 0))
+            return tuple(state)
+        return ("unknown", id(db))
+
+    def _revision_signature(self) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+        local_revision = self._database_revision(self.db)
+        shared_revision = self._database_revision(getattr(self.db, "library_db", None))
         return local_revision, shared_revision
 
     def _refresh_if_stale(self) -> None:
