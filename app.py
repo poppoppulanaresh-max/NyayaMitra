@@ -784,6 +784,9 @@ def render_sources(lang: str, sources: list) -> None:
             st.caption(" · ".join(meta))
             st.markdown(f"**{t(lang, 'answer_source_original')} · {t(lang, 'original_text')}**")
             st.write(s.get("text") or "")
+            if lang in {"hi", "te"}:
+                st.markdown(f"**{t(lang, 'translated_source_passage')}**")
+                st.write(s.get("translated_text") or t(lang, "translation_unavailable"))
 
 
 def page_chat(lang: str, db: Database, rag: NyayMitraRAG) -> None:

@@ -79,6 +79,69 @@ def test_query_translation_expands_telugu_for_english_index(processor, rag, monk
     assert result["sources"][0]["section_number"] == "113"
 
 
+def test_every_retrieved_passage_gets_hindi_or_telugu_translation(rag, monkeypatch):
+    calls = []
+
+    class PassageTranslationClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    calls.append(kwargs)
+                    from unittest.mock import MagicMock
+
+                    response = MagicMock()
+                    response.choices = [MagicMock(message=MagicMock(content=(
+                        '<TRANSLATION id="0">पहला अनुवाद</TRANSLATION>\n'
+                        '<TRANSLATION id="1">दूसरा अनुवाद</TRANSLATION>'
+                    )))]
+                    return response
+
+    monkeypatch.setattr(rag, "_llm", lambda: PassageTranslationClient())
+    original_sources = [
+        {"act_name": "Sample Act", "section_number": "1", "text": "First legal passage."},
+        {"act_name": "Sample Act", "section_number": "2", "text": "Second legal passage."},
+    ]
+
+    for language, expected in (("hi", ["पहला अनुवाद", "दूसरा अनुवाद"]), ("te", ["మొదటి అనువాదం", "రెండవ అనువాదం"])):
+        # Give each language its own exact translations while also ensuring
+        # that every source excerpt is independently paired with a translation.
+        if language == "te":
+            class TeluguPassageTranslationClient:
+                class chat:
+                    class completions:
+                        @staticmethod
+                        def create(**kwargs):
+                            from unittest.mock import MagicMock
+
+                            response = MagicMock()
+                            response.choices = [MagicMock(message=MagicMock(content=(
+                                '<TRANSLATION id="0">మొదటి అనువాదం</TRANSLATION>\n'
+                                '<TRANSLATION id="1">రెండవ అనువాదం</TRANSLATION>'
+                            )))]
+                            return response
+
+            monkeypatch.setattr(rag, "_llm", lambda: TeluguPassageTranslationClient())
+        translated = rag._translate_source_passages(original_sources, language)
+        assert [source["translated_text"] for source in translated] == expected
+        assert [source["text"] for source in translated] == ["First legal passage.", "Second legal passage."]
+
+    assert len(calls) == 1
+
+
+def test_each_passage_has_localized_fallback_when_translation_provider_is_unavailable(rag, monkeypatch):
+    monkeypatch.setattr(rag, "_llm", lambda: None)
+    sources = [
+        {"text": "First passage."},
+        {"text": "Second passage."},
+    ]
+    translated = rag._translate_source_passages(sources, "hi")
+    assert len(translated) == 2
+    assert all(source["translated_text"] for source in translated)
+    assert translated[0]["translated_text"] == translated[1]["translated_text"]
+    assert translated[0]["translated_text"] != "First passage."
+
+
 def test_offline_answer_is_concise_and_keeps_citation_source(processor, rag, monkeypatch):
     processor.ingest(
         "contract.pdf",
@@ -109,7 +172,7 @@ def test_answer_prompt_sets_detail_steps_escalation_and_language(processor, rag)
     assert "entire answer" in prompt and "Telugu" in prompt
     assert "Do not repeat a Sources list or URL" in prompt
     assert "Do not use numbered headings" in prompt
-    assert "short, faithful translation" in prompt
+    assert "unofficial translation immediately after every retrieved passage" in prompt
     assert "same layout for every question" in prompt
     assert "never numbered steps" in prompt
 
