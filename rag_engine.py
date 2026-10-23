@@ -73,6 +73,7 @@ class NyayMitraRAG:
         self.model_name = EMBEDDING_MODEL
         self.encode_fn = encode_fn
         self._embedding_error = ""
+        self._llm_last_error: dict[str, str] = {}
         self._loaded_revision: tuple[int, int] | None = None
         self.reload()
 
@@ -788,8 +789,14 @@ The final answer must be readable entirely in {self._language_name(lang)} except
             )
             content = (response.choices[0].message.content or "").strip() if response and response.choices else ""
             if content:
+                self._llm_last_error = {}
                 return content, True
         except Exception as exc:
+            self._llm_last_error = {
+                "type": type(exc).__name__,
+                "status_code": str(getattr(exc, "status_code", "") or ""),
+                "provider_code": str(getattr(exc, "code", "") or ""),
+            }
             logger.warning("LLM answer generation failed (%s)", type(exc).__name__)
         return t(lang, "llm_unavailable"), False
 
@@ -857,6 +864,7 @@ The final answer must be readable entirely in {self._language_name(lang)} except
             "faiss_index_ready": self.index is not None,
             "llm_available": self._llm() is not None,
             "llm_model": os.getenv("LLM_MODEL") or LLM_MODEL,
+            "llm_last_error": dict(self._llm_last_error),
             "embedding_error": self._embedding_error,
             "use_embeddings": USE_EMBEDDINGS,
         }

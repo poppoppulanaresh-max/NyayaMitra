@@ -306,10 +306,10 @@ html,body,.stApp{overflow-x:hidden}
 .stApp{background:var(--bg);min-height:100vh}
 .block-container{padding:1.15rem clamp(1rem,2vw,2rem) 2rem;max-width:1680px;width:100%;box-sizing:border-box}
 header[data-testid="stHeader"]{display:flex!important;align-items:center;height:2.4rem;background:transparent!important}
-header[data-testid="stHeader"] button[data-testid="stSidebarCollapseButton"]{display:flex!important;visibility:visible!important;width:30px;height:30px;margin-left:8px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--navy)}
-[data-testid="collapsedControl"]{display:flex!important;visibility:visible!important;position:fixed;left:8px;top:8px;z-index:1000}
-[data-testid="collapsedControl"] button{width:30px;height:30px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--navy);box-shadow:var(--shadow)}
-div[data-testid="stToolbar"],#MainMenu{display:none!important}
+div[data-testid="stToolbar"]{display:flex!important;align-items:center;height:2.4rem;background:transparent!important}
+[data-testid="stExpandSidebarButton"]{display:flex!important;visibility:visible!important;position:fixed!important;left:8px;top:6px;z-index:1001;width:30px;height:30px;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--navy);box-shadow:var(--shadow)}
+[data-testid="stSidebarCollapseButton"]{display:inline-flex!important;visibility:visible!important}
+#MainMenu{display:none!important}
 [data-testid="stSidebar"]{background:#fff;border-right:1px solid var(--line);width:212px!important;min-width:212px!important;max-width:212px!important}
 [data-testid="stSidebar"]>div:first-child{padding-top:1rem}
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"]{gap:.45rem}
@@ -1130,6 +1130,14 @@ def page_admin(lang: str, db: Database, processor: DocumentProcessor, rag: NyayM
     c1.metric(t(lang, "metric_docs"), counts["documents"])
     c2.metric(t(lang, "metric_chunks"), counts["chunks"])
     c3.metric(t(lang, "metric_llm"), t(lang, "yes") if openai_configured() else t(lang, "no"))
+    llm_error = rag.status().get("llm_last_error") or {}
+    if llm_error:
+        detail = str(llm_error.get("type") or "Provider error")
+        if llm_error.get("status_code"):
+            detail += f" · HTTP {llm_error['status_code']}"
+        if llm_error.get("provider_code"):
+            detail += f" · {llm_error['provider_code']}"
+        st.error(f"AI request failed: {detail}. Check the provider key, model access, quota, and deployment logs.")
     upload_form(lang, processor, rag)
     st.subheader(t(lang, "indexed_documents"))
     docs = processor.db.list_documents(active_only=True)

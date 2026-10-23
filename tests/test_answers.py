@@ -96,6 +96,37 @@ def test_llm_timeout_and_invalid_response(processor, rag, monkeypatch):
     assert "AI service could not generate" in result2["answer"]
 
 
+def test_provider_error_diagnostics_are_safe(processor, rag, monkeypatch):
+    processor.ingest(
+        "rti.pdf",
+        text_pdf_bytes("Section 3 all citizens shall have the right to information. " * 8),
+        act_name="Right to Information Act, 2005",
+    )
+    rag.reload()
+
+    class UnauthorizedError(Exception):
+        status_code = 401
+        code = "invalid_api_key"
+
+    class FailingClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    raise UnauthorizedError("request used secret-do-not-log")
+
+    monkeypatch.setattr(rag, "_llm", lambda: FailingClient())
+    result = rag.answer("right to information")
+
+    assert result["llm_used"] is False
+    assert rag.status()["llm_last_error"] == {
+        "type": "UnauthorizedError",
+        "status_code": "401",
+        "provider_code": "invalid_api_key",
+    }
+    assert "secret-do-not-log" not in str(rag.status())
+
+
 def test_citations_only_from_retrieved(processor, rag, monkeypatch):
     processor.ingest(
         "rti.pdf",
