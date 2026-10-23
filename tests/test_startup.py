@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -26,6 +28,33 @@ def test_config_without_api_key(monkeypatch):
     monkeypatch.setattr(config, "OPENAI_API_KEY", "")
     assert config.openai_configured() is False
     assert config.LLM_MODEL
+
+
+def test_blank_environment_value_does_not_mask_streamlit_secret(monkeypatch):
+    import config
+
+    monkeypatch.setenv("OPENAI_API_KEY", "   ")
+    monkeypatch.setitem(
+        sys.modules,
+        "streamlit",
+        SimpleNamespace(secrets={"OPENAI_API_KEY": "test-secret-value"}),
+    )
+    assert config._setting("OPENAI_API_KEY") == "test-secret-value"
+
+
+def test_disabled_embeddings_do_not_import_sentence_transformers(monkeypatch):
+    import rag_engine
+
+    rag = object.__new__(rag_engine.NyayMitraRAG)
+    rag.encode_fn = None
+    rag.embedder = None
+    monkeypatch.setattr(rag_engine, "USE_EMBEDDINGS", False)
+    monkeypatch.setattr(
+        rag_engine,
+        "_load_sentence_transformer",
+        lambda: (_ for _ in ()).throw(AssertionError("must stay lazy")),
+    )
+    assert rag._get_embedder() is None
 
 
 def test_database_init_clean_directory(tmp_path):

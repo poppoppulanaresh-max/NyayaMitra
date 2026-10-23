@@ -305,7 +305,11 @@ html,body,[class*="css"]{font-family:"Noto Sans Telugu","Noto Sans Devanagari",s
 html,body,.stApp{overflow-x:hidden}
 .stApp{background:var(--bg);min-height:100vh}
 .block-container{padding:1.15rem clamp(1rem,2vw,2rem) 2rem;max-width:1680px;width:100%;box-sizing:border-box}
-header[data-testid="stHeader"],div[data-testid="stToolbar"],#MainMenu{display:none!important}
+header[data-testid="stHeader"]{display:flex!important;align-items:center;height:2.4rem;background:transparent!important}
+header[data-testid="stHeader"] button[data-testid="stSidebarCollapseButton"]{display:flex!important;visibility:visible!important;width:30px;height:30px;margin-left:8px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--navy)}
+[data-testid="collapsedControl"]{display:flex!important;visibility:visible!important;position:fixed;left:8px;top:8px;z-index:1000}
+[data-testid="collapsedControl"] button{width:30px;height:30px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--navy);box-shadow:var(--shadow)}
+div[data-testid="stToolbar"],#MainMenu{display:none!important}
 [data-testid="stSidebar"]{background:#fff;border-right:1px solid var(--line);width:212px!important;min-width:212px!important;max-width:212px!important}
 [data-testid="stSidebar"]>div:first-child{padding-top:1rem}
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"]{gap:.45rem}

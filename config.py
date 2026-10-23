@@ -13,19 +13,26 @@ except ImportError:
 
 
 def _setting(name: str, default: str = "") -> str:
-    """Read environment first, then Streamlit Cloud secrets, then default."""
+    """Read a non-empty environment value, then Streamlit secrets, then default.
+
+    Deployment platforms may define an environment variable with an empty value
+    even when the real value is stored in Streamlit Secrets. Treat blank values
+    as unset so they do not mask the configured secret.
+    """
     value = os.getenv(name)
-    if value is not None:
+    if value is not None and value.strip():
         return value
     try:
         import streamlit as st
 
-        value = st.secrets.get(name, default)
+        value = st.secrets.get(name)
     except Exception:
         # Streamlit is optional for utility scripts/tests, and local runs need
         # not have a secrets.toml file.
-        value = default
-    return default if value is None else str(value)
+        value = None
+    if value is not None and str(value).strip():
+        return str(value)
+    return default
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("NYAYA_DATA_DIR", BASE_DIR / "data"))

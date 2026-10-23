@@ -32,10 +32,28 @@ try:
 except ImportError:
     faiss = None
 
-try:
-    from sentence_transformers import SentenceTransformer
-except ImportError:
-    SentenceTransformer = None
+# Keep this import lazy. Transformers inspects many optional vision modules
+# during import, which can flood Streamlit's file watcher with missing
+# torchvision warnings even when semantic embeddings are disabled.
+SentenceTransformer = None
+_sentence_transformers_checked = False
+
+
+def _load_sentence_transformer():
+    global SentenceTransformer, _sentence_transformers_checked
+    if SentenceTransformer is not None:
+        return SentenceTransformer
+    if _sentence_transformers_checked:
+        return None
+    _sentence_transformers_checked = True
+    try:
+        from sentence_transformers import SentenceTransformer as model_class
+
+        SentenceTransformer = model_class
+    except Exception as exc:
+        # Embeddings are optional; keyword retrieval remains available.
+        logger.info("Optional sentence-transformers package is unavailable: %s", exc)
+    return SentenceTransformer
 
 try:
     from openai import OpenAI
@@ -153,11 +171,15 @@ class NyayMitraRAG:
     def _get_embedder(self):
         if self.encode_fn is not None:
             return True
-        if not USE_EMBEDDINGS or SentenceTransformer is None:
+        if not USE_EMBEDDINGS:
+            return None
+        model_class = _load_sentence_transformer()
+        if model_class is None:
+            self._embedding_error = "The optional sentence-transformers package is unavailable."
             return None
         if self.embedder is None:
             try:
-                self.embedder = SentenceTransformer(self.model_name)
+                self.embedder = model_class(self.model_name)
             except Exception as exc:
                 self._embedding_error = f"Could not load embedding model '{self.model_name}': {exc}"
                 logger.warning(self._embedding_error)
@@ -479,7 +501,7 @@ class NyayMitraRAG:
             if client is None:
                 return ""
             response = client.chat.completions.create(
-                model=os.getenv("LLM_MODEL", LLM_MODEL),
+                model=os.getenv("LLM_MODEL") or LLM_MODEL,
                 temperature=0,
                 max_tokens=160,
                 timeout=min(12, LLM_TIMEOUT_SECONDS),
@@ -756,7 +778,7 @@ The final answer must be readable entirely in {self._language_name(lang)} except
             if client is None:
                 return t(lang, "llm_not_configured"), False
             response = client.chat.completions.create(
-                model=os.getenv("LLM_MODEL", LLM_MODEL),
+                model=os.getenv("LLM_MODEL") or LLM_MODEL,
                 temperature=0.1,
                 timeout=LLM_TIMEOUT_SECONDS,
                 messages=[
@@ -834,7 +856,7 @@ The final answer must be readable entirely in {self._language_name(lang)} except
             "faiss_available": faiss is not None,
             "faiss_index_ready": self.index is not None,
             "llm_available": self._llm() is not None,
-            "llm_model": os.getenv("LLM_MODEL", LLM_MODEL),
+            "llm_model": os.getenv("LLM_MODEL") or LLM_MODEL,
             "embedding_error": self._embedding_error,
             "use_embeddings": USE_EMBEDDINGS,
         }
