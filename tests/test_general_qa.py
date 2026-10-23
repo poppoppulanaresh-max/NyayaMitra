@@ -209,6 +209,60 @@ def test_pages_to_chunks_carries_section_through_continuation():
     assert chunks[1]["original_filename"] == "sample.pdf"
 
 
+def test_inline_section_cross_reference_does_not_replace_current_heading():
+    text = (
+        "2. Definitions. In this Act, respondent means a person described by "
+        "section 19; (q) respondent means an adult person in a domestic relationship."
+    )
+    assert [(event[2], event[3]) for event in structure_headings(text)] == [("2", "Definitions")]
+    chunks = pages_to_chunks([(1, text)], {"document_id": "dv", "act_name": "Domestic Violence Act"})
+    assert chunks
+    assert all(chunk["section_number"] == "2" for chunk in chunks)
+
+
+def test_source_selection_limits_repeated_provisions_and_near_duplicates(rag):
+    rows = [
+        {"act_name": "Sample Act", "document_id": "a", "section_number": "1", "text": "alpha beta gamma delta", "score": .9},
+        {"act_name": "Sample Act", "document_id": "a", "section_number": "1", "text": "alpha beta epsilon zeta", "score": .8},
+        {"act_name": "Sample Act", "document_id": "a", "section_number": "1", "text": "alpha beta eta theta", "score": .7},
+        {"act_name": "Sample Act", "document_id": "a", "section_number": "2", "text": "iota kappa lambda mu", "score": .6},
+    ]
+    sources = rag._diversify_sources(rows, 4)
+    assert [source["section_number"] for source in sources] == ["1", "1", "2"]
+
+
+def test_answer_call_can_return_answer_and_all_passage_translations_together(rag, monkeypatch):
+    calls = []
+
+    class InlineTranslationClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    calls.append(kwargs)
+                    from unittest.mock import MagicMock
+
+                    response = MagicMock()
+                    response.choices = [MagicMock(message=MagicMock(content=(
+                        "చట్టం గురించి సరళమైన వివరణ.\n"
+                        '<NM_SOURCE_TRANSLATION id="1">మొదటి మూల పాఠ్య అనువాదం</NM_SOURCE_TRANSLATION>\n'
+                        '<NM_SOURCE_TRANSLATION id="2">రెండవ మూల పాఠ్య అనువాదం</NM_SOURCE_TRANSLATION>'
+                    )))]
+                    return response
+
+    monkeypatch.setattr(rag, "_llm", lambda: InlineTranslationClient())
+    sources = [
+        {"act_name": "Sample Act", "section_number": "1", "text": "First source passage."},
+        {"act_name": "Sample Act", "section_number": "2", "text": "Second source passage."},
+    ]
+    answer, used_llm = rag.compose_answer("తెలుగు ప్రశ్న", sources, "te")
+
+    assert used_llm is True
+    assert "NM_SOURCE_TRANSLATION" not in answer
+    assert [source["translated_text"] for source in sources] == ["మొదటి మూల పాఠ్య అనువాదం", "రెండవ మూల పాఠ్య అనువాదం"]
+    assert len(calls) == 1
+
+
 def test_arrangement_of_sections_is_not_mislabeled_as_a_statutory_section():
     chunks = pages_to_chunks(
         [(1, "THE SAMPLE ACT\nARRANGEMENT OF SECTIONS\nSECTIONS\n1. Short title.\n2. Definitions.\n3. Application of Act.")],

@@ -111,6 +111,14 @@ def structure_headings(text: str) -> list[tuple[int, str, str, str]]:
         events.append((match.start(), "chapter", match.group(1).strip(), title))
     for pattern in SECTION_PATTERNS:
         for match in pattern.finditer(text or ""):
+            # Cross-references such as "section 19; (q) 'respondent' means..."
+            # can occur inside a definition. They are not a new heading. The
+            # semicolon immediately after the number is a strong signal that
+            # the phrase is an inline reference, and accepting it corrupts the
+            # inherited section metadata for the rest of the page.
+            raw_title = match.group(2) or ""
+            if re.match(r"\s*[;,)]|\s*\([a-z0-9]+\)", raw_title, re.IGNORECASE):
+                continue
             prefix = (text or "")[max(0, match.start() - 24):match.start()]
             is_article_heading = bool(re.match(
                 r"\s*(?:article|art\.?|अनुच्छेद|ఆర్టికల్)", match.group(0), re.IGNORECASE
@@ -120,7 +128,7 @@ def structure_headings(text: str) -> list[tuple[int, str, str, str]]:
             if is_article_heading and not re.match(r"\s*(?:article|art\.?|अनुच्छेद|ఆర్టికల్)", match.group(0), re.IGNORECASE):
                 continue
             provision_type = "article" if is_article_heading else "section"
-            title = clean_heading_title(match.group(2) or "")[:160]
+            title = clean_heading_title(raw_title)[:160]
             if provision_type == "section" and re.match(
                 r"(?i)(?:for the statement of objects|subs?\.? by act|ins\.? by act|"
                 r"omitted by act|the words\b|the enactments mentioned|see gazette|vide act|"

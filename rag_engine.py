@@ -693,8 +693,49 @@ class NyayMitraRAG:
                 continue
             if stype == "keyword_overlap" and score < (0.18 if act_hint else 0.34):
                 continue
-            filtered.append(self._public_source(row))
-        return filtered[:top_k]
+            filtered.append(row)
+        return self._diversify_sources(filtered, top_k)
+
+    @staticmethod
+    def _diversify_sources(rows: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
+        """Keep the strongest passages while avoiding repeated chunks from one provision."""
+        selected: list[dict[str, Any]] = []
+        provision_counts: dict[tuple[str, str, str], int] = {}
+        seen_chunks: set[str] = set()
+        fingerprints: list[tuple[str, set[str]]] = []
+        for row in rows:
+            chunk_key = str(row.get("chunk_key") or "")
+            if chunk_key and chunk_key in seen_chunks:
+                continue
+            document_id = str(row.get("document_id") or row.get("act_name") or "")
+            provision = (
+                document_id,
+                str(row.get("provision_type") or "section"),
+                str(row.get("section_number") or row.get("section") or "unknown").casefold(),
+            )
+            if provision_counts.get(provision, 0) >= 2:
+                continue
+            tokens = set(re.findall(r"[\w]+", str(row.get("text") or "").casefold(), re.UNICODE))
+            is_overlap_duplicate = False
+            if tokens:
+                for prev_document, prev_tokens in fingerprints:
+                    if prev_document != document_id or not prev_tokens:
+                        continue
+                    union = tokens | prev_tokens
+                    if union and len(tokens & prev_tokens) / len(union) >= 0.88:
+                        is_overlap_duplicate = True
+                        break
+            if is_overlap_duplicate:
+                continue
+            provision_counts[provision] = provision_counts.get(provision, 0) + 1
+            if chunk_key:
+                seen_chunks.add(chunk_key)
+            if tokens:
+                fingerprints.append((document_id, tokens))
+            selected.append(NyayMitraRAG._public_source(row))
+            if len(selected) >= max(1, top_k):
+                break
+        return selected
 
     @staticmethod
     def _public_source(row: dict[str, Any]) -> dict[str, Any]:
@@ -877,6 +918,7 @@ Hard rules:
 - If the user gives too few facts to apply a provision, explain what the supplied provision generally says and ask a brief follow-up question in {self._language_name(lang)}.
 - Do not copy long statutory quotations into the answer. The original PDF passage is available separately in the source viewer; include only a short translated extract when useful.
 - Preserve Act names, section numbers, dates, URLs, and proper nouns as written in the source when needed for accurate citations. Clearly label translations as unofficial.
+- Distinguish what a provision requires an authority to do from what the person asking may choose to do. Do not convert a duty to inform someone of a right into an unsupported mandatory reporting or filing step. Before recommending an action, confirm the retrieved text supports that action and identify the relevant source provision.
 - Do not present the response as legal advice or guarantee an outcome.
 - Only cite SOURCE numbers that appear below.
 
@@ -889,6 +931,7 @@ Retrieved sources:
 
 Write a detailed but clear response using the same layout for every question, with natural headings and short paragraphs in {self._language_name(lang)}:
 When the question is in Hindi or Telugu, the source panel will show an unofficial translation immediately after every retrieved passage. Base your explanation on those passages and do not reproduce a single-source translation as though it covered all retrieved sources.
+When the user's language is Hindi or Telugu, append exactly one machine-readable block for each retrieved source after the answer, translating that source's complete Text faithfully. Use <NM_SOURCE_TRANSLATION id="1">translation</NM_SOURCE_TRANSLATION>, with 1-based IDs matching SOURCE 1, SOURCE 2, and so on. Do not put these blocks in the answer body. Preserve every condition, exception, subsection, and meaningful sentence; add no advice or interpretation inside a translation block. If the language is English, do not emit translation blocks.
 
 Then use these natural, unnumbered headings in the user's language (omit a heading when it does not apply):
 - What the law is about.
@@ -936,7 +979,6 @@ The final answer must be readable entirely in {self._language_name(lang)} except
         lang = self._response_language(query, lang)
         if not sources:
             return t(lang, "insufficient"), False
-        sources[:] = self._translate_source_passages(sources, lang)
         try:
             client = self._llm()
             if client is None:
@@ -953,10 +995,32 @@ The final answer must be readable entirely in {self._language_name(lang)} except
             content = (response.choices[0].message.content or "").strip() if response and response.choices else ""
             if content:
                 self._llm_last_error = {}
-                if not self._citations_match_sources(content, sources):
+                if lang in {"hi", "te"}:
+                    translation_pattern = re.compile(
+                        r'<NM_SOURCE_TRANSLATION\s+id=["\']?(\d+)["\']?\s*>(.*?)</NM_SOURCE_TRANSLATION\s*>',
+                        re.IGNORECASE | re.DOTALL,
+                    )
+                    inline_translations = {
+                        int(index) - 1: body.strip()
+                        for index, body in translation_pattern.findall(content)
+                        if body.strip()
+                    }
+                    for index, translation in inline_translations.items():
+                        if 0 <= index < len(sources):
+                            source_text = str(sources[index].get("text") or "").strip()
+                            if source_text:
+                                cache_key = (lang, hashlib.sha256(source_text.encode("utf-8")).hexdigest())
+                                self._translation_cache[cache_key] = translation
+                    # Use any inline translations from the answer call and
+                    # translate only passages the model omitted or malformed.
+                    cleaned_content = translation_pattern.sub("", content).strip()
+                    sources[:] = self._translate_source_passages(sources, lang)
+                else:
+                    cleaned_content = content
+                if not self._citations_match_sources(cleaned_content, sources):
                     logger.warning("Rejected generated answer with a provision citation not present in retrieved sources")
                     return t(lang, "llm_unsupported_citation"), False
-                return content, True
+                return cleaned_content, True
         except Exception as exc:
             self._llm_last_error = {
                 "type": type(exc).__name__,
