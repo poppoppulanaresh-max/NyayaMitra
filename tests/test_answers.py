@@ -20,6 +20,12 @@ def test_llm_client_uses_private_provider_configuration(rag, monkeypatch):
     monkeypatch.setattr(rag_engine, "OpenAI", fake_openai)
     assert rag._llm() is expected_client
     assert captured["api_key"] == "unit-test-key"
+    assert captured["max_retries"] == 2
+
+    monkeypatch.setattr(rag_engine, "OPENAI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
+    captured.clear()
+    assert rag._llm() is expected_client
+    assert captured["max_retries"] == 3
 
 
 def test_answer_supported_by_retrieved_text(processor, rag):
@@ -78,7 +84,7 @@ def test_llm_timeout_and_invalid_response(processor, rag, monkeypatch):
     monkeypatch.setattr(rag, "_llm", lambda: TimeoutClient())
     result = rag.answer("right to information")
     assert result["llm_used"] is False
-    assert "AI service could not generate" in result["answer"]
+    assert "after automatic retries" in result["answer"]
     assert result["sources"]
 
     class EmptyClient:
@@ -153,6 +159,32 @@ def test_rate_limit_error_gets_actionable_localized_message(processor, rag, monk
     assert used is False
     assert "429" in answer
     assert "బిల్లింగ్" in answer
+
+
+def test_service_unavailable_gets_retry_message(processor, rag, monkeypatch):
+    processor.ingest(
+        "rti.pdf",
+        text_pdf_bytes("Section 3 all citizens shall have the right to information. " * 8),
+        act_name="Right to Information Act, 2005",
+    )
+    rag.reload()
+
+    class ServiceUnavailableError(Exception):
+        status_code = 503
+
+    class FailingClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    raise ServiceUnavailableError("temporarily unavailable")
+
+    monkeypatch.setattr(rag, "_llm", lambda: FailingClient())
+    answer, used = rag.compose_answer(
+        "What does the law say?", [{"act_name": "Right to Information Act", "text": "Section 3"}], "en"
+    )
+    assert used is False
+    assert "after automatic retries" in answer
 
 
 def test_citations_only_from_retrieved(processor, rag, monkeypatch):

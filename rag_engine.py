@@ -678,8 +678,16 @@ class NyayMitraRAG:
         key = (OPENAI_API_KEY or "").strip()
         if OpenAI is None or not key:
             return None
-        kwargs = {"api_key": key, "timeout": LLM_TIMEOUT_SECONDS}
         base = os.getenv("OPENAI_BASE_URL") or OPENAI_BASE_URL
+        # Gemini recommends exponential backoff for transient 5xx responses.
+        # Allow one additional bounded retry for that endpoint only; keep other
+        # providers' retry behavior unchanged.
+        gemini_endpoint = bool(base and urlparse(base).hostname == "generativelanguage.googleapis.com")
+        kwargs = {
+            "api_key": key,
+            "timeout": LLM_TIMEOUT_SECONDS,
+            "max_retries": 3 if gemini_endpoint else 2,
+        }
         if base:
             kwargs["base_url"] = base
         return OpenAI(**kwargs)
@@ -805,6 +813,8 @@ The final answer must be readable entirely in {self._language_name(lang)} except
             )
             if str(self._llm_last_error["status_code"]) == "429":
                 return t(lang, "llm_rate_limited"), False
+            if str(self._llm_last_error["status_code"]) in {"502", "503", "504"} or "Timeout" in type(exc).__name__:
+                return t(lang, "llm_service_busy"), False
         return t(lang, "llm_unavailable"), False
 
     def _citations_from_sources(self, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
