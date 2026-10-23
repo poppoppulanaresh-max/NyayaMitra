@@ -58,7 +58,7 @@ copy .env.example .env
 Edit `.env` **privately**:
 
 - Set `ADMIN_PASSWORD` to a password you will not screenshot or commit.
-- Set `OPENAI_API_KEY` to an OpenAI-compatible API key if you want generated legal explanations and Hindi/Telugu answer translation. Without it the app still starts with an offline source-reference response; arbitrary PDF passages cannot be translated offline.
+- Set `OPENAI_API_KEY` to an OpenAI-compatible API key for the detailed legal explanations, supported next steps, and Hindi/Telugu answer translation. Without it the app can retrieve and show citations, but it cannot generate the requested explanation or translate arbitrary PDF passages.
 
 Launch:
 
@@ -109,7 +109,7 @@ The administrator hash is in `data/nyay_mitra.db`. Bundled Acts and PDFs uploade
 
 The app can run on Streamlit Community Cloud without a paid server plan. Connect the GitHub repository `poppoppulanaresh-max/NyayaMitra`, choose the `main` branch and `app.py` as the entrypoint, then add the values from `streamlit-secrets.example.toml` under **App settings → Secrets**. At minimum, set `NYAYA_PUBLIC_MODE = "1"`. Choose a unique `ADMIN_PASSWORD`; do not paste a real password into this repository. The `.streamlit/secrets.toml` file is ignored by Git if you create it locally.
 
-Set `ADMIN_USERNAME = "NyayaMitra"` and set `ADMIN_PASSWORD` in the private Secrets panel to the password you intend to use. The repository example contains a placeholder only. If sign-in rejects the values, check for old `ADMIN_USERNAME` or `ADMIN_PASSWORD` environment variables in the hosting settings: environment variables take precedence over Streamlit Secrets. Save changes and reboot the app so it reloads configuration. `OPENAI_API_KEY` is optional. Without it, the app uses offline retrieval and shows cited PDF excerpts; arbitrary passages are not translated or paraphrased. If you add a key, non-English questions may be expanded into English search terms, and questions plus retrieved legal excerpts are sent to that AI provider to generate answers and translations. Tell visitors this and advise them not to enter private or sensitive case details.
+Set `ADMIN_USERNAME = "NyayaMitra"` and set `ADMIN_PASSWORD` in the private Secrets panel to the password you intend to use. The repository example contains placeholders only. Add a valid `OPENAI_API_KEY` there as well; this is required for the detailed answer format and regional-language translation. If sign-in rejects the values, check for old admin environment variables: environment variables take precedence over Streamlit Secrets. Save changes and reboot the app so it reloads configuration. The assistant detects Hindi or Telugu script and answers in that language. It translates retrieved English passages as an unofficial explanation, cites the Act and provision, and gives next steps or escalation only when the evidence supports them. Questions and retrieved legal excerpts are sent to the configured provider, so tell visitors not to enter private or sensitive case details.
 
 Streamlit Community Cloud uses an ephemeral local filesystem. PDFs committed in `uploads/` are included with the app and can be re-indexed after restart, but account databases and user-uploaded PDFs are not durable and may be lost on restart or redeploy. Public mode avoids keeping chat/search/quiz histories. Keep a separate copy of source PDFs. For persistent account uploads and databases, use the paid disk-backed Render configuration below.
 
@@ -119,7 +119,7 @@ Streamlit Community Cloud uses an ephemeral local filesystem. PDFs committed in 
 
 Before pushing the repository, place the text-based public law PDFs you want included in `uploads/`. PDFs in that folder are intentionally eligible for Git tracking, so they will be visible in the public repository. Never add `.env`, API keys, the SQLite `.db` file, private documents, or personal data. On first service start, Nyaya Mitra extracts and indexes the bundled starter PDFs once into the shared library under `/var/data/data/law_library/`. Admin uploads are saved in the shared library and immediately available to every visitor; the persistent disk keeps those PDFs and their index across restarts. The PDFs must be committed to Git for first-deploy seeding.
 
-Create a new Render Blueprint from your GitHub repository and select `render.yaml`. The configured username is `NyayaMitra`; set the prompted `ADMIN_PASSWORD` to the password you want to use. `OPENAI_API_KEY` is optional; without it, the app uses offline retrieval and displays cited PDF excerpts, but it cannot automatically translate arbitrary answers. If supplied, native-script questions can be expanded into English search terms, and public users' questions plus retrieved excerpts are sent to the configured AI provider to generate answers.
+Create a new Render Blueprint from your GitHub repository and select `render.yaml`. The configured username is `NyayaMitra`; set the prompted `ADMIN_PASSWORD` and `OPENAI_API_KEY` in the private environment settings. The AI key is required for generated explanations and Hindi/Telugu translation. Native-script questions can then be expanded into English search terms, and user questions plus retrieved excerpts are sent to the configured AI provider.
 
 The Blueprint enables `NYAYA_PUBLIC_MODE=1`: chat messages, search terms, and quiz answers are not saved as history. The admin account database, shared PDF library, and uploaded files remain on the persistent disk. This is still a single-instance public prototype, not a production legal service; back up the persistent volume and verify legal texts and amendments against official sources.
 
@@ -132,7 +132,7 @@ The Blueprint enables `NYAYA_PUBLIC_MODE=1`: chat messages, search terms, and qu
 | Embedding model download hangs | Check internet, or set `NYAYA_USE_EMBEDDINGS=0`. |
 | Admin sign-in always fails | Confirm Streamlit Cloud **App settings → Secrets** contains `ADMIN_USERNAME = "NyayaMitra"` and the intended `ADMIN_PASSWORD`. Check hosting environment variables too, because they override Secrets. Save and reboot the app. Do not commit the password. |
 | Scanned PDF rejected | Provide a text-based PDF. OCR is not in this project. |
-| LLM answers not appearing | Expected without `OPENAI_API_KEY`. Extractive answers still run. |
+| LLM answers not appearing | Set `OPENAI_API_KEY` in private deployment Secrets or environment settings, verify the configured model is available to that key, then restart/reboot the app. |
 
 ## Disclaimer
 

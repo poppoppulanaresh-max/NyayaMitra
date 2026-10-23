@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import py_compile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,7 +38,8 @@ def test_database_init_clean_directory(tmp_path):
 
 
 def test_app_py_compiles():
-    py_compile.compile(str(ROOT / "app.py"), doraise=True)
+    path = ROOT / "app.py"
+    compile(path.read_text(encoding="utf-8"), str(path), "exec")
 
 
 def test_translations_cover_en_hi_te():

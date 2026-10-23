@@ -751,14 +751,14 @@ def localized_verification_status(lang: str, status: str) -> str:
 def render_sources(lang: str, sources: list) -> None:
     if not sources:
         return
-    first = sources[0]
-    provision_label = t(lang, "article") if first.get("provision_type") == "article" else t(lang, "section")
-    section = first.get("section_number") or first.get("section") or t(lang, "unknown_section")
-    page = f" · {t(lang, 'page')} {first.get('page_number')}" if first.get("page_number") else ""
-    st.caption(f"{first.get('act_name')} — {provision_label} {section}{page}")
-    first_url = first.get("source_url") or first.get("source") or ""
-    if first_url.startswith(("https://", "http://")):
-        st.markdown(f"[{t(lang, 'source')}: {first_url}]({first_url})")
+    source = sources[0]
+    provision_label = t(lang, "article") if source.get("provision_type") == "article" else t(lang, "section")
+    section = source.get("section_number") or source.get("section") or t(lang, "unknown_section")
+    page = f" · {t(lang, 'page')} {source.get('page_number')}" if source.get("page_number") else ""
+    st.caption(f"{source.get('act_name')} — {provision_label} {section}{page}")
+    source_url = source.get("source_url") or source.get("source") or ""
+    if source_url.startswith(("https://", "http://")):
+        st.markdown(f"[{t(lang, 'source')}: {source_url}]({source_url})")
     with st.expander(t(lang, "sources"), expanded=False):
         st.caption(t(lang, "translated_note"))
         for s in sources:

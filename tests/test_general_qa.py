@@ -65,18 +65,21 @@ def test_query_translation_expands_telugu_for_english_index(processor, rag, monk
                     if messages and "Translate the user's legal question" in messages[0]["content"]:
                         content = "What is the time limit for filing a civil suit? limitation period article 113 three years Limitation Act"
                     else:
-                        content = "The retrieved excerpt says the period is three years where no other period is specified."
+                        content = "లిమిటేషన్ చట్టంలోని ఆర్టికల్ 113 ప్రకారం, ఇతర చోట్ల గడువు పేర్కొనని దావాలకు మూడు సంవత్సరాల గడువు వర్తిస్తుంది."
                     mock.choices = [MagicMock(message=MagicMock(content=content))]
                     return mock
 
     monkeypatch.setattr(rag, "_llm", lambda: TranslationClient())
     result = rag.answer("సివిల్ కేసు దాఖలు చేయడానికి కాల పరిమితి ఎంత?", lang="te")
     assert result["sources"]
+    assert result["llm_used"] is True
+    assert "మూడు సంవత్సరాల గడువు" in result["answer"]
+    assert "The retrieved excerpt" not in result["answer"]
     assert result["sources"][0]["act_name"] == "The Limitation Act, 1963"
     assert result["sources"][0]["section_number"] == "113"
 
 
-def test_offline_answer_contains_retrieved_excerpt_and_citation(processor, rag, monkeypatch):
+def test_offline_answer_is_concise_and_keeps_citation_source(processor, rag, monkeypatch):
     processor.ingest(
         "contract.pdf",
         text_pdf_bytes("10. What agreements are contracts.—All agreements are contracts if made by free consent of parties competent to contract. " * 5),
@@ -87,9 +90,24 @@ def test_offline_answer_contains_retrieved_excerpt_and_citation(processor, rag, 
     monkeypatch.setattr(rag, "_llm", lambda: None)
     result = rag.answer("What are the key provisions of the Indian Contract Act, 1872?")
     assert result["sources"]
-    assert "Retrieved PDF text" in result["answer"]
-    assert "free consent" in result["answer"].lower()
-    assert "page" in result["answer"].lower()
+    assert "OPENAI_API_KEY" in result["answer"]
+    assert "free consent" in result["sources"][0]["text"].lower()
+
+
+def test_answer_prompt_sets_detail_steps_escalation_and_language(processor, rag):
+    sources = [{
+        "act_name": "The Indian Contract Act, 1872",
+        "section_number": "10",
+        "page_number": "7",
+        "text": "All agreements are contracts if made by free consent of parties competent to contract.",
+        "source_url": "https://example.test/act.pdf",
+    }]
+    prompt = rag._prompt("ఈ ఒప్పందం చెల్లుబాటు అవుతుందా?", sources, "te")
+    assert "What the law is about" in prompt
+    assert "What to do next" in prompt
+    assert "Whether to contact a higher authority" in prompt
+    assert "entire answer" in prompt and "Telugu" in prompt
+    assert "Do not repeat a Sources list or URL" in prompt
 
 
 def test_pages_to_chunks_carries_section_through_continuation():

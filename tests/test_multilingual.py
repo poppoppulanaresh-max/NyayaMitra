@@ -40,7 +40,7 @@ def test_hindi_ui_and_query(processor, rag, monkeypatch):
     result = rag.answer("व्यक्तिगत स्वतंत्रता personal liberty", lang="hi")
     assert result["sources"]
     assert "personal liberty" in result["sources"][0]["text"].lower()
-    assert result["answer"].startswith("अनुक्रमित अंशों के आधार पर")
+    assert "कृत्रिम बुद्धिमत्ता से उत्तर देने की सेवा सेट नहीं है" in result["answer"]
 
 
 def test_telugu_ui_and_query(processor, rag, monkeypatch):
@@ -58,7 +58,7 @@ def test_telugu_ui_and_query(processor, rag, monkeypatch):
     result = rag.answer("personal liberty", lang="te")
     assert result["sources"]
     assert "personal liberty" in result["sources"][0]["text"].lower()
-    assert result["answer"].startswith("సూచికలోని భాగాల ఆధారంగా")
+    assert "కృత్రిమ మేధస్సు సమాధాన సేవను ఇంకా ఏర్పాటు చేయలేదు" in result["answer"]
 
 
 def test_mixed_language_question(processor, rag):
@@ -106,8 +106,7 @@ def test_hindi_fir_retrieves_bnss_173(processor, rag, monkeypatch):
     assert result["sources"]
     assert "Bharatiya Nagarik Suraksha Sanhita" in result["sources"][0]["act_name"]
     assert result["sources"][0]["section_number"] == "173"
-    assert "173" in result["answer"]
-    assert "भारतीय नागरिक सुरक्षा संहिता" in result["answer"]
+    assert "कृत्रिम बुद्धिमत्ता से उत्तर देने की सेवा सेट नहीं है" in result["answer"]
 
 
 def test_telugu_fir_retrieves_bnss_173(processor, rag, monkeypatch):
@@ -129,8 +128,7 @@ def test_telugu_fir_retrieves_bnss_173(processor, rag, monkeypatch):
     assert result["sources"]
     assert "Bharatiya Nagarik Suraksha Sanhita" in result["sources"][0]["act_name"]
     assert result["sources"][0]["section_number"] == "173"
-    assert "173" in result["answer"]
-    assert "భారతీయ నాగరిక్ సురక్ష సంహిత" in result["answer"]
+    assert "కృత్రిమ మేధస్సు సమాధాన సేవను ఇంకా ఏర్పాటు చేయలేదు" in result["answer"]
 
 
 def test_multilingual_consumer_and_dv_retrieval(processor, rag):
