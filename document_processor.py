@@ -419,6 +419,8 @@ class DocumentProcessor:
         if not path.exists() and getattr(self.db, "library_db", None):
             path = self.db.library_db.uploads_dir / doc["stored_filename"]
         if not path.exists():
+            path = Path(__file__).resolve().parent / "uploads" / str(doc.get("original_filename") or "")
+        if not path.exists():
             raise DocumentProcessingError("Stored PDF file is missing.", "missing_file")
         data = path.read_bytes()
         return self.ingest(

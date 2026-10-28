@@ -530,6 +530,27 @@ class Database:
         ]
         return shared_chunks + local_chunks
 
+    def document_chunks(self, document_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        """Read active chunks for one visible document without scanning the library."""
+        with self.connect() as con:
+            local_doc = con.execute(
+                "SELECT active FROM documents WHERE id = ?", (str(document_id),)
+            ).fetchone()
+            if local_doc:
+                if not local_doc["active"]:
+                    return []
+                limit_sql = " LIMIT ?" if limit is not None else ""
+                params = (str(document_id), int(limit)) if limit is not None else (str(document_id),)
+                rows = con.execute(
+                    "SELECT c.*, d.original_filename FROM chunks c "
+                    "LEFT JOIN documents d ON d.id = c.document_id "
+                    "WHERE c.document_id = ? AND c.active = 1 "
+                    "AND length(trim(c.text)) > 0 ORDER BY c.id" + limit_sql,
+                    params,
+                ).fetchall()
+                return [dict(row) for row in rows]
+        return self.library_db.document_chunks(document_id, limit) if self.library_db else []
+
     def search_chunks(
         self,
         act_name: str = "",
@@ -599,7 +620,9 @@ class Database:
     def counts(self) -> dict[str, int]:
         with self.connect() as con:
             local_docs = con.execute("SELECT COUNT(*) AS c FROM documents WHERE active = 1").fetchone()["c"]
-            local_chunks = con.execute("SELECT COUNT(*) AS c FROM chunks WHERE active = 1").fetchone()["c"]
+            local_chunks = con.execute(
+                "SELECT COUNT(*) AS c FROM chunks WHERE active = 1 AND length(trim(text)) > 0"
+            ).fetchone()["c"]
             local_rows = con.execute("SELECT id, file_hash, active FROM documents").fetchall()
         if not self.library_db:
             return {"documents": local_docs, "chunks": local_chunks}
@@ -610,10 +633,16 @@ class Database:
             if str(row.get("id")) not in local_ids
             and (not row.get("file_hash") or str(row.get("file_hash")) not in local_hashes)
         ]
-        shared_doc_ids = {str(row["id"]) for row in shared_docs}
-        shared_chunk_count = sum(
-            1 for row in self.library_db.active_chunks() if str(row.get("document_id")) in shared_doc_ids
-        )
+        shared_doc_ids = [str(row["id"]) for row in shared_docs]
+        shared_chunk_count = 0
+        if shared_doc_ids:
+            placeholders = ",".join("?" for _ in shared_doc_ids)
+            with self.library_db.connect() as con:
+                shared_chunk_count = int(con.execute(
+                    f"SELECT COUNT(*) FROM chunks WHERE active = 1 "
+                    f"AND length(trim(text)) > 0 AND document_id IN ({placeholders})",
+                    shared_doc_ids,
+                ).fetchone()[0])
         return {"documents": local_docs + len(shared_docs), "chunks": local_chunks + shared_chunk_count}
 
     def log_search(self, query: str, category: str) -> None:

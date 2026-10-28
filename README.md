@@ -6,7 +6,7 @@ Answers are limited to retrieved passages. If the indexed documents are insuffic
 
 ## What is implemented
 
-- Home library updates, Act name/Act number search, indexed PDF browsing, chat assistant, quiz, and admin upload
+- Home headlines for the full indexed PDF collection, Act name/Act number search, selected-PDF browsing, chat assistant, quiz, and admin upload
 - English, Hindi, and Telugu **interface** labels (legal quotations stay in the source language)
 - PDF ingestion with SHA-256 duplicate detection, page numbers, chapter/section detection (including bare numbered headings), and FAISS retrieval when embeddings load
 - Offline retrieval across all indexed Acts and cited source excerpts when no LLM API key is configured
@@ -15,7 +15,8 @@ Answers are limited to retrieved passages. If the indexed documents are insuffic
 - SQLite persistence for documents, chunks, chats, quiz attempts, and PBKDF2 password hashes
 - One configured administrator login, with admin-uploaded PDFs stored in the shared law library
 - Admin-managed quiz questions with validation, editing, and removal
-- Act-specific quiz rounds generated from uploaded PDF section openings: 10 questions per set, fresh sections in the next set, completion tracking for the active app session, and retakes
+- Act-specific quiz rounds generated from the selected indexed PDF only: 10 questions per set, fresh sections in the next set, cached until that PDF changes, completion tracking for the active app session, and retakes
+- One shared assistant retrieval index, initialized only when the assistant/admin tools are opened; Home and Browse do not read and embed every PDF on every rerun
 - Administrator sign-in (PBKDF2 password hashing). Admin pages are hidden and server-checked; signed-in accounts can manage their own PDFs
 
 ## What is not claimed
@@ -27,15 +28,9 @@ Answers are limited to retrieved passages. If the indexed documents are insuffic
 
 ## Documents currently added to this local project
 
-The local database currently contains uploaded copies of the following Acts, alongside the educational starter records:
+The bundled law library currently contains 52 distinct indexed PDF Acts, including the recently added Central Acts. The current index is stored in `data/law_library/nyaya_mitra.db`; the source PDFs remain in `uploads/`. Two older duplicate PDF filenames are superseded by the supplied updated copies. The count can change as more source PDFs are added and indexed.
 
-- The Protection of Children from Sexual Offences Act, 2012
-- The Protection of Women from Domestic Violence Act, 2005
-- The Bharatiya Nyaya Sanhita, 2023 (the supplied PDF says “As on 6 October 2025”)
-- The Consumer Protection Act, 2019
-- The Information Technology Act, 2000
-
-These PDFs were supplied as uploads and are marked `unverified_upload`. Their presence in the app does not establish official source, completeness, or current legal status. The app opens on the chat assistant; Home and other modules remain available in the sidebar. Home highlights documents in the local library and is not a live legal-news feed. Browse Laws supports searching by Act name or Act number and lists uploaded PDFs by enactment year. Quizzes use section-opening lines extracted from each PDF and cite the original page; extraction quality varies with the supplied file.
+Their presence in the app does not establish official verification, completeness, or current legal status. Home lists the indexed documents as headlines; Browse Laws lists the complete collection and loads a PDF only after the user opens that Act. The assistant can retrieve from the full indexed library. Quizzes are generated from the selected Act's extracted section openings and cite source pages; extraction quality varies by PDF.
 
 Starter records in `data/legal_knowledge.json` are **educational samples or short public excerpts**. Replace them with text you have checked against India Code or another official source before a graded demonstration of “grounded law”.
 
@@ -103,7 +98,9 @@ Tests use synthetic PDFs and mocked LLM clients. They do not need a paid API key
 
 ## Persistence model
 
-The administrator hash is in `data/nyay_mitra.db`. Bundled Acts and PDFs uploaded through the Admin Portal are stored in the shared `data/law_library/` database and `data/law_library/uploads/` folder. Admin uploads are visible on Home and Browse Laws and available to every visitor's assistant. Chat history remains under the signed-in profile when history is enabled. These runtime files are ignored by git.
+The bundled search index in `data/law_library/nyaya_mitra.db` is committed with the source PDFs so a new deployment does not have to extract every Act before the app opens. When a new PDF is added to `uploads/` and its metadata is included in the bundled-PDF map in `app.py`, startup indexes that PDF into the shared library. Commit both the PDF and the refreshed `data/law_library/nyaya_mitra.db` to make the bundled Act list reproducible after deployment.
+
+Admin-uploaded PDFs and the admin hash are stored under `data/law_library/uploads/` and `data/nyay_mitra.db`; chat history remains under the signed-in profile when history is enabled. Hosted local filesystems may be ephemeral: use a persistent disk-backed deployment such as the supplied Render configuration for admin uploads, otherwise keep the original PDFs in the repository's `uploads/` folder and redeploy them with the app.
 
 ## Free public demo deployment (Streamlit Community Cloud)
 

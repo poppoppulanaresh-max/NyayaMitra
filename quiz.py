@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import random
 import re
+from collections import OrderedDict
 from typing import Any
 
 from database import Database
@@ -13,6 +14,7 @@ from translations import t
 class QuizService:
     def __init__(self, db: Database):
         self.db = db
+        self._pool_cache: OrderedDict[tuple[Any, ...], list[dict[str, Any]]] = OrderedDict()
 
     def questions(self) -> list[dict[str, Any]]:
         return self.db.quiz_questions()
@@ -21,6 +23,7 @@ class QuizService:
         return [
             doc for doc in self.db.list_documents(active_only=True)
             if str(doc.get("original_filename") or "").lower().endswith(".pdf")
+            and doc.get("indexing_status") == "indexed"
         ]
 
     def law_question_pool(self, document_id: str, lang: str = "en") -> list[dict[str, Any]]:
@@ -28,10 +31,12 @@ class QuizService:
         document = next((d for d in self.law_documents() if str(d["id"]) == str(document_id)), None)
         if not document:
             return []
-        chunks = [
-            chunk for chunk in self.db.active_chunks()
-            if str(chunk.get("document_id")) == str(document_id)
-        ]
+        shared_revision = self.db.library_db.content_revision() if self.db.library_db else 0
+        cache_key = (str(document_id), lang, self.db.content_revision(), shared_revision)
+        if cache_key in self._pool_cache:
+            self._pool_cache.move_to_end(cache_key)
+            return self._pool_cache[cache_key]
+        chunks = self.db.document_chunks(str(document_id))
         line_pattern = re.compile(r"(?m)^\s*(\d{1,3}[A-Z]?)\.\s+([^\n]{8,180})", re.IGNORECASE)
         entries: dict[str, tuple[str, str]] = {}
         for chunk in chunks:
@@ -66,6 +71,10 @@ class QuizService:
                 "source": f"{document.get('original_filename')} · page {page}",
                 "educational_label": 1,
             })
+        self._pool_cache[cache_key] = questions
+        self._pool_cache.move_to_end(cache_key)
+        while len(self._pool_cache) > 48:
+            self._pool_cache.popitem(last=False)
         return questions
 
     def round_questions(self, document_id: str, round_index: int, lang: str = "en", size: int = 10) -> list[dict[str, Any]]:

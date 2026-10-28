@@ -57,7 +57,7 @@ def load_json(path: Path) -> list:
 
 
 def seed_bundled_pdfs(db: Database, uploads_dir: Path) -> None:
-    """Index the official Act PDFs bundled with the app for every user profile."""
+    """Index new bundled Act PDFs without rereading files already in the committed index."""
     act_by_filename = {
         "0ae7f82ab5b7_CP_Act_2019_1732700731.pdf": "The Consumer Protection Act, 2019",
         "0b305c1ed9b5_1709101314.pdf": "The Protection of Children from Sexual Offences Act, 2012",
@@ -222,26 +222,34 @@ def seed_bundled_pdfs(db: Database, uploads_dir: Path) -> None:
     processor = DocumentProcessor(db, uploads_dir)
     bundled_uploads = Path(__file__).resolve().parent / "uploads"
     bundled_filenames = set(act_by_filename)
-    # Replace only the app's previous bundled copy when a newer supplied PDF exists.
+    # Map each older filename to its newer supplied replacement.
     bundled_replacements = {
         "A2000-21.pdf": "e71725fa32e8_it_act_2000_updated.pdf",
         "A2012-32.pdf": "0b305c1ed9b5_1709101314.pdf",
     }
+    replacement_sources = {new_name: old_name for old_name, new_name in bundled_replacements.items()}
     active_docs = db.list_documents(active_only=True)
+    indexed_filenames = {
+        str(doc.get("original_filename") or "").casefold()
+        for doc in active_docs
+        if doc.get("indexing_status") == "indexed"
+    }
     for pdf_path in sorted(bundled_uploads.glob("*.pdf")):
         if pdf_path.name not in bundled_filenames:
             continue
-        if pdf_path.name in set(bundled_replacements.values()) and any(
-            (bundled_uploads / new_name).is_file()
-            for new_name, old_name in bundled_replacements.items()
-            if old_name == pdf_path.name
-        ):
+        replacement_filename = bundled_replacements.get(pdf_path.name)
+        if replacement_filename and (bundled_uploads / replacement_filename).is_file():
+            continue
+        # The bundled SQLite index is committed alongside source PDFs. Checking
+        # its indexed filenames avoids opening and hashing every large PDF on a
+        # cold deploy; new filenames still get indexed automatically.
+        if pdf_path.name.casefold() in indexed_filenames:
             continue
         try:
             data = pdf_path.read_bytes()
             if db.find_document_by_hash(sha256_bytes(data)):
                 continue
-            replacement_name = bundled_replacements.get(pdf_path.name)
+            replacement_name = replacement_sources.get(pdf_path.name)
             replacement_doc = next(
                 (doc for doc in active_docs if doc.get("original_filename") == replacement_name),
                 None,
@@ -266,6 +274,7 @@ def seed_bundled_pdfs(db: Database, uploads_dir: Path) -> None:
             )
             active_docs = [doc for doc in active_docs if str(doc.get("id")) != str(record["id"])]
             active_docs.append(record)
+            indexed_filenames.add(pdf_path.name.casefold())
             logger.info("Indexed bundled law PDF %s", pdf_path.name)
         except (OSError, DocumentProcessingError):
             logger.exception("Could not index bundled law PDF %s", pdf_path.name)
@@ -348,7 +357,16 @@ def get_profile_db(profile_id: str) -> Database:
 
 
 def get_db() -> Database:
-    profile_id = st.session_state.get("user_id") or st.session_state.get("guest_profile_id")
+    user_id = st.session_state.get("user_id")
+    if user_id:
+        profile_id = str(user_id)
+    elif config.PUBLIC_MODE:
+        # Public mode does not persist chat, search, or quiz history. Reusing
+        # one anonymous read profile avoids creating and migrating a SQLite DB
+        # for every visitor while the shared law library remains available.
+        profile_id = "public-guest"
+    else:
+        profile_id = st.session_state.get("guest_profile_id")
     if not profile_id:
         profile_id = "guest-" + str(uuid.uuid4())
         st.session_state.guest_profile_id = profile_id
@@ -361,12 +379,17 @@ def profile_upload_dir(db: Database) -> Path:
     return uploads_dir
 
 
-def document_pdf_path(db: Database, stored_filename: str) -> Path:
+def document_pdf_path(db: Database, stored_filename: str, original_filename: str = "") -> Path:
     local_path = profile_upload_dir(db) / stored_filename
     if local_path.is_file():
         return local_path
     if db.library_db:
-        return db.library_db.uploads_dir / stored_filename
+        shared_path = db.library_db.uploads_dir / stored_filename
+        if shared_path.is_file():
+            return shared_path
+    bundled_path = Path(__file__).resolve().parent / "uploads" / original_filename
+    if original_filename and bundled_path.is_file():
+        return bundled_path
     return local_path
 
 
@@ -407,13 +430,43 @@ def publish_legacy_admin_pdfs(profile_db: Database, library_db: Database) -> boo
 
 
 @st.cache_resource
-def get_rag(profile_id: str, _db: Database) -> NyayMitraRAG:
+def get_rag(_db: Database) -> NyayMitraRAG:
+    """Share one in-memory retrieval index for the shared law library."""
     return NyayMitraRAG(_db)
 
 
 def refresh_rag(db: Database) -> NyayMitraRAG:
-    get_rag.clear()
-    return get_rag(db.db_path.parent.name, db)
+    rag = get_rag(db.library_db or db)
+    rag.reload()
+    return rag
+
+
+@st.cache_resource
+def get_quiz_service(profile_id: str, _db: Database) -> QuizService:
+    """Keep per-profile quiz state and its derived-question cache across reruns."""
+    return QuizService(_db)
+
+
+@st.cache_data(show_spinner=False)
+def asset_data_uri(path: str, mime_type: str = "image/jpeg") -> str:
+    asset = Path(path)
+    if not asset.is_file():
+        return ""
+    return f"data:{mime_type};base64," + base64.b64encode(asset.read_bytes()).decode("ascii")
+
+
+@st.cache_data(max_entries=2, show_spinner=False)
+def cached_pdf_bytes(path: str, modified_ns: int, size: int) -> bytes:
+    """Avoid rereading a selected multi-megabyte PDF on every Streamlit rerun."""
+    del modified_ns, size
+    return Path(path).read_bytes()
+
+
+@st.cache_data(max_entries=2, show_spinner=False)
+def cached_pdf_data_uri(path: str, modified_ns: int, size: int) -> str:
+    """Cache the selected PDF's iframe payload across Streamlit reruns."""
+    data = cached_pdf_bytes(path, modified_ns, size)
+    return "data:application/pdf;base64," + base64.b64encode(data).decode("ascii")
 
 
 def inject_css() -> None:
@@ -520,7 +573,7 @@ button:focus,input:focus,textarea:focus,select:focus{outline:2px solid var(--red
 def init_state() -> None:
     defaults = {
         "language": "English",
-        "page": "chat",
+        "page": "home",
         "messages": [],
         "pending_question": "",
         "is_admin": False,
@@ -563,6 +616,15 @@ def init_state() -> None:
 def act_year(act_name: str) -> int | None:
     match = re.search(r"\b(?:18|19|20)\d{2}\b", str(act_name or ""))
     return int(match.group(0)) if match else None
+
+
+def act_number_from_filename(filename: str) -> str:
+    """Read common India Code PDF filenames without loading extracted chunks."""
+    stem = Path(str(filename or "")).stem
+    match = re.search(r"(?<!\d)((?:18|19|20)\d{2})[-_ ]?(\d{1,3})(?!\d)", stem, re.IGNORECASE)
+    if not match:
+        return ""
+    return f"{int(match.group(2))} of {match.group(1)}"
 
 
 def display_act_title(value: Any) -> str:
@@ -748,7 +810,7 @@ def establish_account_session(user_id: str, username: str, is_admin: bool) -> No
 def page_home(lang: str, db: Database, searcher: LegalSearch) -> None:
     st.markdown(f'<div class="home-hero"><div class="kicker">Indian legal information</div><h1 class="home-hero-title">{t(lang, "welcome_title")}</h1></div>', unsafe_allow_html=True)
     if LEGAL_HERO_IMAGE.exists():
-        hero_uri = "data:image/jpeg;base64," + base64.b64encode(LEGAL_HERO_IMAGE.read_bytes()).decode("ascii")
+        hero_uri = asset_data_uri(str(LEGAL_HERO_IMAGE))
         st.markdown(f'<div class="home-hero-image"><img src="{hero_uri}" alt="Allahabad High Court building" /></div>', unsafe_allow_html=True)
     st.markdown('<h2 class="centered-section-title">Recently Updated Laws</h2>', unsafe_allow_html=True)
     docs = [
@@ -760,7 +822,8 @@ def page_home(lang: str, db: Database, searcher: LegalSearch) -> None:
     if not docs:
         st.info(t(lang, "no_documents"))
         return
-    for doc in docs[:12]:
+    st.caption(f"{len(docs)} indexed legal PDFs · Browse Laws to open or download a document.")
+    for doc in docs:
         title = display_act_title(doc.get("act_name") or Path(str(doc.get("original_filename") or "")).stem)
         year = act_year(title)
         date_label = display_act_title(doc.get("version_or_date") or doc.get("upload_date") or "Recently added")
@@ -773,20 +836,12 @@ def page_home(lang: str, db: Database, searcher: LegalSearch) -> None:
 
 
 def render_pdf_law_library(lang: str, db: Database, query: str = "") -> None:
-    """List indexed Act PDFs with expandable text and a direct PDF download."""
+    """Render a light PDF list; load bytes and extracted text only for one selected Act."""
     docs = [
         doc for doc in db.list_documents(active_only=True)
         if str(doc.get("original_filename") or "").lower().endswith(".pdf")
         and doc.get("indexing_status") == "indexed"
     ]
-    chunks_by_doc: dict[str, list[dict[str, Any]]] = {str(doc["id"]): [] for doc in docs}
-    for chunk in db.active_chunks():
-        if str(chunk.get("document_id")) in chunks_by_doc:
-            chunks_by_doc[str(chunk["document_id"])].append(chunk)
-    for doc in docs:
-        doc["act_number"] = extract_act_number(doc, chunks_by_doc.get(str(doc["id"]), []))
-        doc["year"] = act_year(doc.get("act_name", ""))
-
     st.caption(f"{len(docs)} indexed legal PDFs")
     if not docs:
         st.info(t(lang, "no_documents"))
@@ -795,70 +850,103 @@ def render_pdf_law_library(lang: str, db: Database, query: str = "") -> None:
     if search:
         search_terms = re.sub(r"[^a-z0-9]+", " ", search).strip()
         number_terms = re.sub(r"^act\s+", "", search_terms)
-        docs = [
-            doc for doc in docs
-            if any(term and term in re.sub(
-                r"[^a-z0-9]+", " ",
-                " ".join(str(doc.get(field) or "") for field in ("act_name", "act_number", "original_filename", "year")).casefold(),
-            ) for term in {search_terms, number_terms})
-        ]
+        matching_docs = []
+        for doc in docs:
+            searchable = " ".join(
+                str(doc.get(field) or "") for field in ("act_name", "original_filename", "year")
+            )
+            searchable += " " + act_number_from_filename(str(doc.get("original_filename") or ""))
+            normalized = re.sub(r"[^a-z0-9]+", " ", searchable).casefold()
+            if any(term and term in normalized for term in {search_terms, number_terms}):
+                matching_docs.append(doc)
+        docs = matching_docs
     if not docs:
         st.info(t(lang, "no_match"))
         return
 
-    for doc in sorted(docs, key=lambda row: str(row.get("upload_date") or ""), reverse=True):
-        chunks = chunks_by_doc.get(str(doc["id"]), [])
+    docs = sorted(docs, key=lambda row: str(row.get("upload_date") or ""), reverse=True)
+    doc_by_id = {str(doc["id"]): doc for doc in docs}
+    selected_id = str(st.session_state.get("browse_pdf_id") or "")
+    if selected_id not in doc_by_id:
+        selected_id = ""
+
+    for doc in docs:
         raw_title = str(doc.get("act_name") or doc.get("original_filename") or t(lang, "uploaded_pdf"))
         title = display_act_title(raw_title)
-        label = f"{title} · Act {doc['act_number']} ({doc['year']})" if doc.get("act_number") else title
-        with st.expander(label, expanded=False):
-            st.caption(
-                f"{doc.get('page_count') or 0} {t(lang, 'page')} · "
-                f"{len(chunks)} {t(lang, 'indexed_passages')} · "
-                f"{t(lang, 'verification')}: {localized_verification_status(lang, str(doc.get('verification_status') or 'unverified'))}"
-            )
-            if doc.get("version_or_date"):
-                st.caption(str(doc["version_or_date"]))
-            stored_pdf = document_pdf_path(db, str(doc.get("stored_filename") or ""))
-            if stored_pdf.is_file():
-                pdf_data = stored_pdf.read_bytes()
-                st.download_button(
-                    "Download PDF",
-                    data=pdf_data,
-                    file_name=str(doc.get("original_filename") or "legal_document.pdf"),
-                    mime="application/pdf",
-                    key=f"laws_download_act_{doc['id']}",
-                    use_container_width=True,
-                )
-                pdf_b64 = base64.b64encode(pdf_data).decode("ascii")
-                st.iframe(
-                    f"data:application/pdf;base64,{pdf_b64}",
-                    height=690,
-                )
-            first_chunks = chunks[:2]
-            if first_chunks:
-                st.caption(t(lang, "act_text_preview"))
-                for chunk in first_chunks:
-                    if chunk.get("section_number") and chunk.get("section_number") != "unknown":
-                        provision_label = t(lang, "article") if chunk.get("provision_type") == "article" else t(lang, "section")
-                        st.markdown(f"**{provision_label} {escape(str(chunk['section_number']))}**")
-                    st.write(chunk.get("text") or "")
-            official_url = str(doc.get("source_url") or "").strip()
-            if official_url:
-                st.link_button("Open official source", official_url)
-            if chunks:
-                st.markdown("#### Full Act Text")
-                for chunk in chunks:
-                    section = chunk.get("section_number")
-                    page = chunk.get("page_number")
-                    heading = []
-                    if section and section != "unknown":
-                        heading.append(f"{t(lang, 'section')} {section}")
-                    if page:
-                        heading.append(f"{t(lang, 'page')} {page}")
-                    if heading:
-                        st.caption(" · ".join(heading))
-                    st.write(chunk.get("text") or "")
+        year = act_year(title)
+        number = act_number_from_filename(str(doc.get("original_filename") or ""))
+        label = f"{title} · Act {number}" if number else title
+        left, right = st.columns([6, 1.2], vertical_alignment="center")
+        left.markdown(f"**{escape(label)}**")
+        left.caption(str(doc.get("original_filename") or "PDF"))
+        if right.button(t(lang, "browse_act"), key=f"open_law_pdf_{doc['id']}", use_container_width=True):
+            st.session_state.browse_pdf_id = str(doc["id"])
+            st.session_state.show_full_act_text = False
+            st.rerun()
+
+    if not selected_id:
+        return
+
+    doc = doc_by_id[selected_id]
+    preview_chunks = db.document_chunks(selected_id, limit=2)
+    title = display_act_title(doc.get("act_name") or doc.get("original_filename") or t(lang, "uploaded_pdf"))
+    st.divider()
+    st.subheader(title)
+    st.caption(
+        f"{doc.get('page_count') or 0} {t(lang, 'page')} · "
+        f"{doc.get('chunk_count') or 0} {t(lang, 'indexed_passages')} · "
+        f"{t(lang, 'verification')}: {localized_verification_status(lang, str(doc.get('verification_status') or 'unverified'))}"
+    )
+    if doc.get("version_or_date"):
+        st.caption(str(doc["version_or_date"]))
+    stored_pdf = document_pdf_path(
+        db,
+        str(doc.get("stored_filename") or ""),
+        str(doc.get("original_filename") or ""),
+    )
+    close_col, _ = st.columns([1, 5])
+    if close_col.button(t(lang, "close"), key=f"close_law_pdf_{selected_id}"):
+        st.session_state.browse_pdf_id = ""
+        st.session_state.show_full_act_text = False
+        st.rerun()
+    if stored_pdf.is_file():
+        stat = stored_pdf.stat()
+        pdf_data = cached_pdf_bytes(str(stored_pdf), stat.st_mtime_ns, stat.st_size)
+        st.download_button(
+            t(lang, "download_pdf"),
+            data=pdf_data,
+            file_name=str(doc.get("original_filename") or "legal_document.pdf"),
+            mime="application/pdf",
+            key=f"laws_download_act_{doc['id']}",
+        )
+        with st.expander(t(lang, "browse_pdf_page"), expanded=True):
+            st.iframe(cached_pdf_data_uri(str(stored_pdf), stat.st_mtime_ns, stat.st_size), height=690)
+    official_url = str(doc.get("source_url") or "").strip()
+    if official_url:
+        st.link_button("Open official source", official_url)
+    if preview_chunks:
+        st.caption(t(lang, "act_text_preview"))
+        for chunk in preview_chunks:
+            if chunk.get("section_number") and chunk.get("section_number") != "unknown":
+                provision_label = t(lang, "article") if chunk.get("provision_type") == "article" else t(lang, "section")
+                st.markdown(f"**{provision_label} {escape(str(chunk['section_number']))}**")
+            st.write(chunk.get("text") or "")
+        if st.button(t(lang, "read_full_act_text"), key=f"full_act_text_{selected_id}"):
+            st.session_state.show_full_act_text = True
+        if st.session_state.get("show_full_act_text"):
+            st.markdown("#### Full Act Text")
+            chunks = db.document_chunks(selected_id)
+            for chunk in chunks:
+                section = chunk.get("section_number")
+                page = chunk.get("page_number")
+                heading = []
+                if section and section != "unknown":
+                    heading.append(f"{t(lang, 'section')} {section}")
+                if page:
+                    heading.append(f"{t(lang, 'page')} {page}")
+                if heading:
+                    st.caption(" · ".join(heading))
+                st.write(chunk.get("text") or "")
 
 
 def localized_verification_status(lang: str, status: str) -> str:
@@ -923,7 +1011,7 @@ def page_chat(lang: str, db: Database, rag: NyayMitraRAG) -> None:
 
     center, right = st.columns([7.1, 2.9], gap="medium")
     with center:
-        chat_uri = "data:image/jpeg;base64," + base64.b64encode(CHAT_IMAGE.read_bytes()).decode("ascii") if CHAT_IMAGE.exists() else ""
+        chat_uri = asset_data_uri(str(CHAT_IMAGE))
         st.markdown(f'<div class="module-banner"><h1>{t(lang, "chat_title")}</h1><img src="{chat_uri}" alt="Historic law books" /></div>' if chat_uri else f'<div class="module-banner"><h1>{t(lang, "chat_title")}</h1></div>', unsafe_allow_html=True)
         with st.container(border=True):
             if not st.session_state.messages:
@@ -1036,10 +1124,10 @@ def page_chat(lang: str, db: Database, rag: NyayMitraRAG) -> None:
 
 
 def page_laws(lang: str, searcher: LegalSearch) -> None:
-    laws_uri = "data:image/jpeg;base64," + base64.b64encode(LAWS_IMAGE.read_bytes()).decode("ascii") if LAWS_IMAGE.exists() else ""
+    laws_uri = asset_data_uri(str(LAWS_IMAGE))
     st.markdown(f'<div class="module-banner"><h1>{t(lang, "laws_title")}</h1><img src="{laws_uri}" alt="Bengaluru High Court" /></div>' if laws_uri else f'<div class="module-banner"><h1>{t(lang, "laws_title")}</h1></div>', unsafe_allow_html=True)
     st.markdown('<h2 class="centered-section-title">Browse All Laws</h2>', unsafe_allow_html=True)
-    st.caption("Search Acts by title or Act number. Select a law to expand its PDF and extracted text.")
+    st.caption("Search Acts by title or Act number. Open one Act to view its PDF, download it, or read extracted text.")
     query = st.text_input(
         "Search laws",
         placeholder="Enter an Act name or Act number",
@@ -1049,7 +1137,7 @@ def page_laws(lang: str, searcher: LegalSearch) -> None:
 
 
 def page_quiz(lang: str, quiz: QuizService) -> None:
-    sdg_uri = "data:image/jpeg;base64," + base64.b64encode(SDG_16_IMAGE.read_bytes()).decode("ascii") if SDG_16_IMAGE.exists() else ""
+    sdg_uri = asset_data_uri(str(SDG_16_IMAGE))
     st.markdown(f'<div class="module-banner"><h1>{t(lang, "quiz_title")}</h1><img src="{sdg_uri}" alt="United Nations Sustainable Development Goal 16: Peace, Justice and Strong Institutions" /></div>', unsafe_allow_html=True)
     if sdg_uri:
         st.markdown('<div class="sdg-attribution"><a href="https://www.un.org/sustainabledevelopment/" target="_blank">United Nations Sustainable Development Goals</a>. The content of this publication has not been approved by the United Nations and does not reflect the views of the United Nations or its officials or Member States.</div>', unsafe_allow_html=True)
@@ -1238,7 +1326,7 @@ def page_admin_portal(lang: str, auth_db: Database) -> None:
                 st.error('The username or password does not match the configured admin credentials. In Streamlit Cloud, check App settings → Secrets for ADMIN_USERNAME = "NyayaMitra" and the intended ADMIN_PASSWORD. Environment variables override Secrets. Save the settings and reboot the app.')
 
 
-def page_admin(lang: str, db: Database, processor: DocumentProcessor, rag: NyayMitraRAG) -> None:
+def page_admin(lang: str, db: Database, processor: DocumentProcessor) -> None:
     if not require_admin(lang):
         return
     st.markdown(
@@ -1250,15 +1338,7 @@ def page_admin(lang: str, db: Database, processor: DocumentProcessor, rag: NyayM
     c1.metric(t(lang, "metric_docs"), counts["documents"])
     c2.metric(t(lang, "metric_chunks"), counts["chunks"])
     c3.metric(t(lang, "metric_llm"), t(lang, "yes") if openai_configured() else t(lang, "no"))
-    llm_error = rag.status().get("llm_last_error") or {}
-    if llm_error:
-        detail = str(llm_error.get("type") or "Provider error")
-        if llm_error.get("status_code"):
-            detail += f" · HTTP {llm_error['status_code']}"
-        if llm_error.get("provider_code"):
-            detail += f" · {llm_error['provider_code']}"
-        st.error(f"AI request failed: {detail}. Check the provider key, model access, quota, and deployment logs.")
-    upload_form(lang, processor, rag)
+    upload_form(lang, processor)
     st.subheader(t(lang, "indexed_documents"))
     docs = processor.db.list_documents(active_only=True)
     if not docs:
@@ -1290,7 +1370,6 @@ def page_admin(lang: str, db: Database, processor: DocumentProcessor, rag: NyayM
             if b1.button(t(lang, "reprocess"), key=f"re_{doc['id']}"):
                 try:
                     processor.reprocess(doc["id"])
-                    rag.reload()
                     st.success(t(lang, "processed_ok"))
                     st.rerun()
                 except DocumentProcessingError as exc:
@@ -1300,10 +1379,10 @@ def page_admin(lang: str, db: Database, processor: DocumentProcessor, rag: NyayM
                     st.error(t(lang, "processing_error"))
             if b2.button(t(lang, "remove"), key=f"rm_{doc['id']}"):
                 processor.remove(doc["id"])
-                rag.reload()
                 st.rerun()
     if st.button(t(lang, "rebuild_index"), type="primary"):
-        rag.reload()
+        with st.spinner(t(lang, "loading")):
+            refresh_rag(processor.db)
         st.success(t(lang, "processed_ok"))
     st.subheader(t(lang, "quiz_management"))
     questions = db.quiz_questions()
@@ -1347,7 +1426,7 @@ def page_admin(lang: str, db: Database, processor: DocumentProcessor, rag: NyayM
         st.rerun()
 
 
-def upload_form(lang: str, processor: DocumentProcessor, rag: NyayaMitraRAG) -> None:
+def upload_form(lang: str, processor: DocumentProcessor) -> None:
     st.subheader(t(lang, "upload"))
     existing_docs = processor.db.list_documents(active_only=True)
     mode_options = [t(lang, "add_new_pdf")]
@@ -1401,7 +1480,6 @@ def upload_form(lang: str, processor: DocumentProcessor, rag: NyayaMitraRAG) -> 
             version_or_date=version,
             document_id=str(selected_doc["id"]) if selected_doc else None,
         )
-        rag.reload()
         st.success(f"{t(lang, 'processed_ok')} {record.get('chunk_count', 0)} {t(lang, 'chunks_created')}")
     except DocumentProcessingError as exc:
         st.error(str(exc))
@@ -1417,9 +1495,7 @@ def page_upload(lang: str, processor: DocumentProcessor) -> None:
         f'<div class="panel hero"><h1>{t(lang, "upload")}</h1><p>{t(lang, "admin_intro")}</p></div>',
         unsafe_allow_html=True,
     )
-    profile_id = str(st.session_state.get("user_id") or "")
-    rag = get_rag(profile_id, get_db())
-    upload_form(lang, processor, rag)
+    upload_form(lang, processor)
 
 
 def main() -> None:
@@ -1428,10 +1504,10 @@ def main() -> None:
     auth_db = get_auth_db()
     db = get_db()
     profile_id = st.session_state.get("user_id") or st.session_state.guest_profile_id
-    rag = get_rag(str(profile_id), db)
     processor = DocumentProcessor(db, profile_upload_dir(db))
     searcher = LegalSearch(db)
-    quiz = QuizService(db)
+    quiz_profile_id = "public-guest" if config.PUBLIC_MODE and not st.session_state.get("user_id") else str(profile_id)
+    quiz = get_quiz_service(quiz_profile_id, db)
     header(LANGS[st.session_state.language])
     lang = LANGS[st.session_state.language]
     sidebar_nav(lang)
@@ -1439,7 +1515,7 @@ def main() -> None:
     if page == "home":
         page_home(lang, db, searcher)
     elif page == "chat":
-        page_chat(lang, db, rag)
+        page_chat(lang, db, get_rag(db.library_db or db))
     elif page == "laws":
         page_laws(lang, searcher)
     elif page == "quiz":
@@ -1448,15 +1524,13 @@ def main() -> None:
         page_admin_portal(lang, auth_db)
     elif page == "admin":
         library_db = get_law_library_db()
-        if publish_legacy_admin_pdfs(db, library_db):
-            rag.reload()
+        publish_legacy_admin_pdfs(db, library_db)
         shared_processor = DocumentProcessor(library_db, library_db.uploads_dir)
-        page_admin(lang, db, shared_processor, rag)
+        page_admin(lang, db, shared_processor)
     elif page == "upload":
         if st.session_state.is_admin:
             library_db = get_law_library_db()
-            if publish_legacy_admin_pdfs(db, library_db):
-                rag.reload()
+            publish_legacy_admin_pdfs(db, library_db)
             shared_processor = DocumentProcessor(library_db, library_db.uploads_dir)
             page_upload(lang, shared_processor)
         else:
