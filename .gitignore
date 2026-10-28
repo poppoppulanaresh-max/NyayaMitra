@@ -6,6 +6,7 @@ __pycache__/
 .env
 *.db
 data/profiles/
+data/law_library/uploads/
 .pytest_cache/
 .mypy_cache/
 data/*.index
