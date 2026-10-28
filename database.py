@@ -549,7 +549,28 @@ class Database:
                     params,
                 ).fetchall()
                 return [dict(row) for row in rows]
-        return self.library_db.document_chunks(document_id, limit) if self.library_db else []
+        if not self.library_db:
+            return []
+        library_reader = getattr(self.library_db, "document_chunks", None)
+        if callable(library_reader):
+            try:
+                return library_reader(document_id, limit)
+            except AttributeError:
+                # A cached Database instance from a previous app revision may
+                # not have document_chunks yet. Fall through to the same
+                # document-scoped SQL query without scanning all library text.
+                pass
+        limit_sql = " LIMIT ?" if limit is not None else ""
+        params = (str(document_id), int(limit)) if limit is not None else (str(document_id),)
+        with self.library_db.connect() as con:
+            rows = con.execute(
+                "SELECT c.*, d.original_filename FROM chunks c "
+                "LEFT JOIN documents d ON d.id = c.document_id "
+                "WHERE c.document_id = ? AND c.active = 1 "
+                "AND length(trim(c.text)) > 0 ORDER BY c.id" + limit_sql,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def search_chunks(
         self,

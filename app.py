@@ -536,7 +536,6 @@ div[data-testid="stTextInput"] input,div[data-testid="stTextArea"] textarea,div[
 .module-banner{display:grid;grid-template-columns:1.3fr 1fr;gap:20px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px;margin:0 0 18px;box-shadow:var(--shadow)}
 .module-banner img{width:100%;height:150px;object-fit:cover;object-position:center;border-radius:12px}
 .module-banner h1{font-family:'Source Serif 4',Georgia,serif;font-size:28px;color:var(--navy);margin:0}
-.sdg-attribution{font-size:10px;color:#718096;line-height:1.35;margin-top:4px}
 div[data-testid="stImage"] img{display:block;width:100%;object-fit:cover;border-radius:13px;border:1px solid var(--line)}
 .chat-hero-image img{height:112px}
 .chat-surface{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px;min-height:400px;box-shadow:0 1px 3px rgba(20,33,61,.04)}
@@ -1139,8 +1138,6 @@ def page_laws(lang: str, searcher: LegalSearch) -> None:
 def page_quiz(lang: str, quiz: QuizService) -> None:
     sdg_uri = asset_data_uri(str(SDG_16_IMAGE))
     st.markdown(f'<div class="module-banner"><h1>{t(lang, "quiz_title")}</h1><img src="{sdg_uri}" alt="United Nations Sustainable Development Goal 16: Peace, Justice and Strong Institutions" /></div>', unsafe_allow_html=True)
-    if sdg_uri:
-        st.markdown('<div class="sdg-attribution"><a href="https://www.un.org/sustainabledevelopment/" target="_blank">United Nations Sustainable Development Goals</a>. The content of this publication has not been approved by the United Nations and does not reflect the views of the United Nations or its officials or Member States.</div>', unsafe_allow_html=True)
     docs = quiz.law_documents()
     if not docs:
         st.info(t(lang, "no_documents"))
