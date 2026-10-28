@@ -532,6 +532,7 @@ class Database:
 
     def document_chunks(self, document_id: str, limit: int | None = None) -> list[dict[str, Any]]:
         """Read active chunks for one visible document without scanning the library."""
+        library_db = getattr(self, "library_db", None)
         with self.connect() as con:
             local_doc = con.execute(
                 "SELECT active FROM documents WHERE id = ?", (str(document_id),)
@@ -549,9 +550,9 @@ class Database:
                     params,
                 ).fetchall()
                 return [dict(row) for row in rows]
-        if not self.library_db:
+        if not library_db:
             return []
-        library_reader = getattr(self.library_db, "document_chunks", None)
+        library_reader = getattr(library_db, "document_chunks", None)
         if callable(library_reader):
             try:
                 return library_reader(document_id, limit)
@@ -562,7 +563,7 @@ class Database:
                 pass
         limit_sql = " LIMIT ?" if limit is not None else ""
         params = (str(document_id), int(limit)) if limit is not None else (str(document_id),)
-        with self.library_db.connect() as con:
+        with library_db.connect() as con:
             rows = con.execute(
                 "SELECT c.*, d.original_filename FROM chunks c "
                 "LEFT JOIN documents d ON d.id = c.document_id "

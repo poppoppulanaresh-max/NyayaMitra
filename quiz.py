@@ -31,21 +31,27 @@ class QuizService:
         document = next((d for d in self.law_documents() if str(d["id"]) == str(document_id)), None)
         if not document:
             return []
-        shared_revision = self.db.library_db.content_revision() if self.db.library_db else 0
-        cache_key = (str(document_id), lang, self.db.content_revision(), shared_revision)
+        library_db = getattr(self.db, "library_db", None)
+        local_revision_reader = getattr(self.db, "content_revision", None)
+        shared_revision_reader = getattr(library_db, "content_revision", None)
+        local_revision = local_revision_reader() if callable(local_revision_reader) else 0
+        shared_revision = shared_revision_reader() if callable(shared_revision_reader) else 0
+        cache_key = (str(document_id), lang, local_revision, shared_revision)
         if cache_key in self._pool_cache:
             self._pool_cache.move_to_end(cache_key)
             return self._pool_cache[cache_key]
         chunk_reader = getattr(self.db, "document_chunks", None)
         if callable(chunk_reader):
-            chunks = chunk_reader(str(document_id))
+            try:
+                chunks = chunk_reader(str(document_id))
+            except AttributeError:
+                # Cached database resources can outlive a source-code update.
+                # The current Database method handles older shared DB objects;
+                # this last resort preserves quiz availability if that method
+                # itself comes from an older class definition.
+                chunks = self._legacy_document_chunks(str(document_id))
         else:
-            # Keep the quiz usable if a deployment temporarily mixes the new
-            # quiz module with a cached/older Database class.
-            chunks = [
-                chunk for chunk in self.db.active_chunks()
-                if str(chunk.get("document_id")) == str(document_id)
-            ]
+            chunks = self._legacy_document_chunks(str(document_id))
         line_pattern = re.compile(r"(?m)^\s*(\d{1,3}[A-Z]?)\.\s+([^\n]{8,180})", re.IGNORECASE)
         entries: dict[str, tuple[str, str]] = {}
         for chunk in chunks:
@@ -85,6 +91,19 @@ class QuizService:
         while len(self._pool_cache) > 48:
             self._pool_cache.popitem(last=False)
         return questions
+
+    def _legacy_document_chunks(self, document_id: str) -> list[dict[str, Any]]:
+        """Read one Act directly when an older cached Database lacks the helper."""
+        source_db = getattr(self.db, "library_db", None) or self.db
+        with source_db.connect() as con:
+            rows = con.execute(
+                "SELECT c.*, d.original_filename FROM chunks c "
+                "LEFT JOIN documents d ON d.id = c.document_id "
+                "WHERE c.document_id = ? AND c.active = 1 "
+                "AND length(trim(c.text)) > 0 ORDER BY c.id",
+                (document_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def round_questions(self, document_id: str, round_index: int, lang: str = "en", size: int = 10) -> list[dict[str, Any]]:
         pool = self.law_question_pool(document_id, lang)
