@@ -68,7 +68,7 @@ streamlit run app.py
 
 Or double-click `run_windows.bat`. The batch file creates `.venv` if needed, installs dependencies, copies `.env.example` to `.env` when `.env` is missing, and starts Streamlit. If a step fails it prints the error and waits.
 
-The app uses offline keyword retrieval by default so startup does not wait for a model download. To use multilingual semantic retrieval without an AI API, set `NYAYA_USE_EMBEDDINGS=1` in `.env`; the first launch then loads/downloads `intfloat/multilingual-e5-small` (internet required if it is not cached). If model loading fails, the app falls back to keyword search. A configured `OPENAI_API_KEY` also enables general Telugu/Hindi-to-English query expansion before searching English PDFs. Without either capability, cross-language matching is limited; the app still shows exact retrieved source passages and must not claim universal multilingual coverage. The interface uses system fonts and does not need Google Fonts to load.
+The app uses offline keyword retrieval by default so startup does not wait for a model download. Semantic retrieval packages are intentionally excluded from the default deployment requirements. To enable multilingual semantic retrieval without an AI API, install `requirements-embeddings.txt`, then set `NYAYA_USE_EMBEDDINGS=1` in `.env`; the first launch then loads/downloads `intfloat/multilingual-e5-small` (internet required if it is not cached). This optional setup may download large machine-learning dependencies. If model loading fails, the app falls back to keyword search. A configured `OPENAI_API_KEY` also enables general Telugu/Hindi-to-English query expansion before searching English PDFs. Without either capability, cross-language matching is limited; the app still shows exact retrieved source passages and must not claim universal multilingual coverage. The interface uses system fonts and does not need Google Fonts to load.
 
 ## Administrator access
 
@@ -128,8 +128,8 @@ The Blueprint enables `NYAYA_PUBLIC_MODE=1`: chat messages, search terms, and qu
 | Symptom | What to try |
 | --- | --- |
 | `python` not found | Install Python 3.10/3.11 and tick “Add python to PATH”. |
-| `faiss-cpu` install fails | Confirm you are in `.venv` and using 64-bit Python. |
-| Embedding model download hangs | Check internet, or set `NYAYA_USE_EMBEDDINGS=0`. |
+| Semantic retrieval packages install slowly | They are optional. Install `requirements-embeddings.txt` only if you plan to set `NYAYA_USE_EMBEDDINGS=1`. |
+| Embedding model download hangs | Check internet, or leave `NYAYA_USE_EMBEDDINGS=0` to use keyword retrieval. |
 | Admin sign-in always fails | Confirm Streamlit Cloud **App settings → Secrets** contains `ADMIN_USERNAME = "NyayaMitra"` and the intended `ADMIN_PASSWORD`. Check hosting environment variables too, because they override Secrets. Save and reboot the app. Do not commit the password. |
 | Scanned PDF rejected | Provide a text-based PDF. OCR is not in this project. |
 | LLM answers not appearing | Set `OPENAI_API_KEY` in private deployment Secrets or environment settings, verify the configured model is available to that key, then restart/reboot the app. |

@@ -783,12 +783,9 @@ def render_pdf_law_library(lang: str, db: Database, query: str = "") -> None:
                     use_container_width=True,
                 )
                 pdf_b64 = base64.b64encode(pdf_data).decode("ascii")
-                st.components.v1.html(
-                    f'<iframe title="{escape(title)} PDF" '
-                    f'style="width:100%;height:680px;border:1px solid #d9dee6;border-radius:10px" '
-                    f'src="data:application/pdf;base64,{pdf_b64}"></iframe>',
+                st.iframe(
+                    f"data:application/pdf;base64,{pdf_b64}",
                     height=690,
-                    scrolling=False,
                 )
             first_chunks = chunks[:2]
             if first_chunks:
