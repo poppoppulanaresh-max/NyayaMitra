@@ -36,7 +36,16 @@ class QuizService:
         if cache_key in self._pool_cache:
             self._pool_cache.move_to_end(cache_key)
             return self._pool_cache[cache_key]
-        chunks = self.db.document_chunks(str(document_id))
+        chunk_reader = getattr(self.db, "document_chunks", None)
+        if callable(chunk_reader):
+            chunks = chunk_reader(str(document_id))
+        else:
+            # Keep the quiz usable if a deployment temporarily mixes the new
+            # quiz module with a cached/older Database class.
+            chunks = [
+                chunk for chunk in self.db.active_chunks()
+                if str(chunk.get("document_id")) == str(document_id)
+            ]
         line_pattern = re.compile(r"(?m)^\s*(\d{1,3}[A-Z]?)\.\s+([^\n]{8,180})", re.IGNORECASE)
         entries: dict[str, tuple[str, str]] = {}
         for chunk in chunks:

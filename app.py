@@ -873,16 +873,16 @@ def render_pdf_law_library(lang: str, db: Database, query: str = "") -> None:
     for doc in docs:
         raw_title = str(doc.get("act_name") or doc.get("original_filename") or t(lang, "uploaded_pdf"))
         title = display_act_title(raw_title)
-        year = act_year(title)
         number = act_number_from_filename(str(doc.get("original_filename") or ""))
         label = f"{title} · Act {number}" if number else title
-        left, right = st.columns([6, 1.2], vertical_alignment="center")
-        left.markdown(f"**{escape(label)}**")
-        left.caption(str(doc.get("original_filename") or "PDF"))
-        if right.button(t(lang, "browse_act"), key=f"open_law_pdf_{doc['id']}", use_container_width=True):
-            st.session_state.browse_pdf_id = str(doc["id"])
-            st.session_state.show_full_act_text = False
-            st.rerun()
+        with st.container(border=True):
+            left, right = st.columns([6, 1.2], vertical_alignment="center")
+            left.markdown(f"**{escape(label)}**")
+            left.caption(str(doc.get("original_filename") or "PDF"))
+            if right.button(t(lang, "browse_act"), key=f"open_law_pdf_{doc['id']}", use_container_width=True):
+                st.session_state.browse_pdf_id = str(doc["id"])
+                st.session_state.show_full_act_text = False
+                st.rerun()
 
     if not selected_id:
         return
