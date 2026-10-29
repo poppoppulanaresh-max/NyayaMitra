@@ -544,12 +544,13 @@ class Database:
     def deactivate_document(self, document_id: str) -> None:
         # A profile can hide a shared library item without changing the common
         # library for other users by storing an inactive local override.
-        if self.library_db:
+        if getattr(self, "library_db", None) is not None:
             with self.connect() as con:
                 local_exists = con.execute("SELECT 1 FROM documents WHERE id = ?", (document_id,)).fetchone()
             if not local_exists:
-                shared = self.library_db.get_document(document_id)
-                if shared:
+                shared_reader = getattr(self.library_db, "get_document", None)
+                shared = shared_reader(document_id) if callable(shared_reader) else None
+                if shared is not None:
                     tombstone = dict(shared)
                     tombstone["active"] = 0
                     tombstone["indexing_status"] = "removed"
