@@ -618,7 +618,7 @@ class Database:
                 columns = tuple(column[0] for column in (cursor.description or ()))
                 rows = cursor.fetchall()
                 return [_row_to_dict(row, columns) for row in rows]
-        if not library_db:
+        if library_db is None:
             return []
         library_reader = getattr(library_db, "document_chunks", None)
         if callable(library_reader):
@@ -631,9 +631,16 @@ class Database:
                 # not have document_chunks yet. Fall through to the same
                 # document-scoped SQL query without scanning all library text.
                 pass
+        # Streamlit may retain a Database object created by an older app
+        # revision. Use its connection only when the legacy object exposes it;
+        # otherwise the preview/quiz should degrade gracefully instead of
+        # crashing the whole page with AttributeError.
+        connector = getattr(library_db, "connect", None)
+        if not callable(connector):
+            return []
         limit_sql = " LIMIT ?" if limit is not None else ""
         params = (str(document_id), int(limit)) if limit is not None else (str(document_id),)
-        with library_db.connect() as con:
+        with connector() as con:
             cursor = con.execute(
                 "SELECT c.*, d.original_filename FROM chunks c "
                 "LEFT JOIN documents d ON d.id = c.document_id "
