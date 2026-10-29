@@ -9,6 +9,17 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 SCHEMA_VERSION = 3
+DOCUMENT_ROW_COLUMNS = (
+    "id", "original_filename", "stored_filename", "act_name", "source_url",
+    "language", "version_or_date", "upload_date", "file_hash", "extraction_status",
+    "verification_status", "indexing_status", "processing_error", "page_count",
+    "chunk_count", "active",
+)
+CHUNK_ROW_COLUMNS = (
+    "id", "chunk_key", "document_id", "act_name", "section_number", "section_title",
+    "provision_type", "chapter", "chapter_title", "page_number", "source_url",
+    "language", "verification_status", "text", "active", "original_filename",
+)
 
 
 def utc_now() -> str:
@@ -410,14 +421,25 @@ class Database:
             sql += " WHERE active = 1"
         sql += " ORDER BY upload_date DESC"
         with self.connect() as con:
-            local = [dict(r) for r in con.execute(sql, params).fetchall()]
-            local_all = con.execute("SELECT id, file_hash FROM documents").fetchall()
+            cursor = con.execute(sql, params)
+            local = [_row_to_dict(row, DOCUMENT_ROW_COLUMNS) for row in cursor.fetchall()]
+            local_cursor = con.execute("SELECT id, file_hash FROM documents")
+            local_all = [
+                _row_to_dict(row, ("id", "file_hash"))
+                for row in local_cursor.fetchall()
+            ]
         if not self.library_db:
             return local
-        overridden_ids = {str(row["id"]) for row in local_all}
-        local_hashes = {str(row["file_hash"]) for row in local_all if row["file_hash"]}
+        overridden_ids = {str(row.get("id")) for row in local_all}
+        local_hashes = {
+            str(row.get("file_hash")) for row in local_all if row.get("file_hash")
+        }
+        shared_rows = self.library_db.list_documents(active_only=active_only)
+        shared_docs = [
+            _row_to_dict(row, DOCUMENT_ROW_COLUMNS) for row in (shared_rows or [])
+        ]
         shared = [
-            row for row in self.library_db.list_documents(active_only=active_only)
+            row for row in shared_docs
             if str(row.get("id")) not in overridden_ids
             and (not row.get("file_hash") or str(row.get("file_hash")) not in local_hashes)
         ]
@@ -539,21 +561,36 @@ class Database:
 
     def active_chunks(self) -> list[dict[str, Any]]:
         with self.connect() as con:
-            rows = con.execute(
+            cursor = con.execute(
                 "SELECT c.*, d.original_filename FROM chunks c "
                 "LEFT JOIN documents d ON d.id = c.document_id "
                 "WHERE c.active = 1 AND length(trim(c.text)) > 0 ORDER BY c.document_id, c.id"
-            ).fetchall()
-            local_chunks = [dict(r) for r in rows]
-            local_docs = con.execute("SELECT id, file_hash FROM documents").fetchall()
+            )
+            local_chunks = [
+                _row_to_dict(row, CHUNK_ROW_COLUMNS) for row in cursor.fetchall()
+            ]
+            local_cursor = con.execute("SELECT id, file_hash FROM documents")
+            local_docs = [
+                _row_to_dict(row, ("id", "file_hash"))
+                for row in local_cursor.fetchall()
+            ]
         if not self.library_db:
             return local_chunks
-        overridden_ids = {str(row["id"]) for row in local_docs}
-        local_hashes = {str(row["file_hash"]) for row in local_docs if row["file_hash"]}
-        shared_docs = self.library_db.list_documents(active_only=False)
+        overridden_ids = {str(row.get("id")) for row in local_docs}
+        local_hashes = {
+            str(row.get("file_hash")) for row in local_docs if row.get("file_hash")
+        }
+        shared_rows = self.library_db.list_documents(active_only=False)
+        shared_docs = [
+            _row_to_dict(row, DOCUMENT_ROW_COLUMNS) for row in (shared_rows or [])
+        ]
         shared_hash_by_id = {str(row["id"]): str(row.get("file_hash") or "") for row in shared_docs}
+        shared_chunk_rows = self.library_db.active_chunks()
+        shared_chunks_all = [
+            _row_to_dict(row, CHUNK_ROW_COLUMNS) for row in (shared_chunk_rows or [])
+        ]
         shared_chunks = [
-            row for row in self.library_db.active_chunks()
+            row for row in shared_chunks_all
             if str(row.get("document_id")) not in overridden_ids
             and shared_hash_by_id.get(str(row.get("document_id")), "") not in local_hashes
         ]

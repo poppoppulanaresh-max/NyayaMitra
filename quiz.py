@@ -7,7 +7,7 @@ import re
 from collections import OrderedDict
 from typing import Any
 
-from database import Database
+from database import Database, _row_to_dict
 from translations import t
 
 
@@ -52,7 +52,7 @@ class QuizService:
         if callable(chunk_reader):
             try:
                 chunks = chunk_reader(str(document_id))
-            except AttributeError:
+            except (AttributeError, TypeError):
                 # Cached database resources can outlive a source-code update.
                 # The current Database method handles older shared DB objects;
                 # this last resort preserves quiz availability if that method
@@ -104,14 +104,16 @@ class QuizService:
         """Read one Act directly when an older cached Database lacks the helper."""
         source_db = getattr(self.db, "library_db", None) or self.db
         with source_db.connect() as con:
-            rows = con.execute(
+            cursor = con.execute(
                 "SELECT c.*, d.original_filename FROM chunks c "
                 "LEFT JOIN documents d ON d.id = c.document_id "
                 "WHERE c.document_id = ? AND c.active = 1 "
                 "AND length(trim(c.text)) > 0 ORDER BY c.id",
                 (document_id,),
-            ).fetchall()
-        return [dict(row) for row in rows]
+            )
+            columns = tuple(column[0] for column in (cursor.description or ()))
+            rows = cursor.fetchall()
+        return [_row_to_dict(row, columns) for row in rows]
 
     def round_questions(self, document_id: str, round_index: int, lang: str = "en", size: int = 10) -> list[dict[str, Any]]:
         pool = self.law_question_pool(document_id, lang)
