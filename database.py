@@ -598,17 +598,31 @@ class Database:
         return shared_chunks + local_chunks
 
     def document_chunks(self, document_id: str, limit: int | None = None) -> list[dict[str, Any]]:
-        """Read active chunks for one visible document without scanning the library."""
-        library_db = getattr(self, "library_db", None)
-        with self.connect() as con:
-            local_doc = con.execute(
-                "SELECT active FROM documents WHERE id = ?", (str(document_id),)
-            ).fetchone()
-            if local_doc:
-                if not local_doc["active"]:
-                    return []
-                limit_sql = " LIMIT ?" if limit is not None else ""
-                params = (str(document_id), int(limit)) if limit is not None else (str(document_id),)
+        """Read chunks directly from SQLite, avoiding stale cached DB methods."""
+        document_key = str(document_id)
+        limit_sql = " LIMIT ?" if limit is not None else ""
+        params = (document_key, max(0, int(limit))) if limit is not None else (document_key,)
+
+        def read_from_path(db_path: Any, *, require_active_document: bool) -> list[dict[str, Any]] | None:
+            if not db_path:
+                return None
+            con = sqlite3.connect(str(db_path))
+            con.row_factory = sqlite3.Row
+            try:
+                if require_active_document:
+                    doc_row = con.execute(
+                        "SELECT active FROM documents WHERE id = ?", (document_key,)
+                    ).fetchone()
+                    if doc_row is not None:
+                        if not doc_row["active"]:
+                            return []
+                        source_exists = True
+                    else:
+                        source_exists = False
+                else:
+                    source_exists = True
+                if not source_exists:
+                    return None
                 cursor = con.execute(
                     "SELECT c.*, d.original_filename FROM chunks c "
                     "LEFT JOIN documents d ON d.id = c.document_id "
@@ -617,41 +631,19 @@ class Database:
                     params,
                 )
                 columns = tuple(column[0] for column in (cursor.description or ()))
-                rows = cursor.fetchall()
-                return [_row_to_dict(row, columns) for row in rows]
+                return [_row_to_dict(row, columns) for row in cursor.fetchall()]
+            finally:
+                con.close()
+
+        local_rows = read_from_path(getattr(self, "db_path", None), require_active_document=True)
+        if local_rows is not None:
+            return local_rows
+
+        library_db = getattr(self, "library_db", None)
         if library_db is None:
             return []
-        library_reader = getattr(library_db, "document_chunks", None)
-        if callable(library_reader):
-            try:
-                shared_rows = library_reader(document_id, limit)
-                if shared_rows is not None:
-                    return [_row_to_dict(row) for row in shared_rows]
-            except (AttributeError, TypeError):
-                # A cached Database instance from a previous app revision may
-                # not have document_chunks yet. Fall through to the same
-                # document-scoped SQL query without scanning all library text.
-                pass
-        # Streamlit may retain a Database object created by an older app
-        # revision. Use its connection only when the legacy object exposes it;
-        # otherwise the preview/quiz should degrade gracefully instead of
-        # crashing the whole page with AttributeError.
-        connector = getattr(library_db, "connect", None)
-        if not callable(connector):
-            return []
-        limit_sql = " LIMIT ?" if limit is not None else ""
-        params = (str(document_id), int(limit)) if limit is not None else (str(document_id),)
-        with connector() as con:
-            cursor = con.execute(
-                "SELECT c.*, d.original_filename FROM chunks c "
-                "LEFT JOIN documents d ON d.id = c.document_id "
-                "WHERE c.document_id = ? AND c.active = 1 "
-                "AND length(trim(c.text)) > 0 ORDER BY c.id" + limit_sql,
-                params,
-            )
-            columns = tuple(column[0] for column in (cursor.description or ()))
-            rows = cursor.fetchall()
-        return [_row_to_dict(row, columns) for row in rows]
+        shared_rows = read_from_path(getattr(library_db, "db_path", None), require_active_document=False)
+        return shared_rows or []
 
     def search_chunks(
         self,

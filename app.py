@@ -23,6 +23,9 @@ from translations import LANGS, detect_response_language, suggested_questions, s
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("nyaya.app")
+# Bump when cached database/service interfaces change. Streamlit otherwise can
+# reuse resource instances created by an older code build after a hot deploy.
+RESOURCE_CACHE_EPOCH = 3
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 LEGAL_HERO_IMAGE = ASSETS_DIR / "courthouse-hero.jpg"
 LAWS_IMAGE = ASSETS_DIR / "bengaluru-high-court.jpg"
@@ -280,7 +283,8 @@ def seed_bundled_pdfs(db: Database, uploads_dir: Path) -> None:
             logger.exception("Could not index bundled law PDF %s", pdf_path.name)
 
 @st.cache_resource
-def get_auth_db() -> Database:
+def get_auth_db(cache_epoch: int) -> Database:
+    del cache_epoch  # The argument intentionally participates in the cache key.
     db = Database(DB_PATH)
     ensure_account_schema(db)
     bootstrap_admin(db)
@@ -292,8 +296,9 @@ def get_auth_db() -> Database:
 
 
 @st.cache_resource
-def get_law_library_db() -> Database:
+def get_law_library_db(cache_epoch: int) -> Database:
     """Index bundled public law PDFs once and share them read-only by default."""
+    del cache_epoch
     library_dir = config.DATA_DIR / "law_library"
     uploads_dir = library_dir / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -342,13 +347,14 @@ def sync_admin_account(db: Database, username: str, password_hash: str) -> None:
 
 
 @st.cache_resource
-def get_profile_db(profile_id: str) -> Database:
+def get_profile_db(profile_id: str, cache_epoch: int) -> Database:
+    del cache_epoch
     profile_dir = config.DATA_DIR / "profiles" / profile_id
     uploads_dir = profile_dir / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
     db = Database(
         profile_dir / "nyaya_mitra.db",
-        library_db=get_law_library_db(),
+        library_db=get_law_library_db(RESOURCE_CACHE_EPOCH),
         uploads_dir=uploads_dir,
     )
     db.seed_knowledge(load_json(KB_SEED_PATH))
@@ -370,7 +376,7 @@ def get_db() -> Database:
     if not profile_id:
         profile_id = "guest-" + str(uuid.uuid4())
         st.session_state.guest_profile_id = profile_id
-    return get_profile_db(str(profile_id))
+    return get_profile_db(str(profile_id), RESOURCE_CACHE_EPOCH)
 
 
 def profile_upload_dir(db: Database) -> Path:
@@ -430,20 +436,22 @@ def publish_legacy_admin_pdfs(profile_db: Database, library_db: Database) -> boo
 
 
 @st.cache_resource
-def get_rag(_db: Database) -> NyayMitraRAG:
+def get_rag(_db: Database, cache_epoch: int) -> NyayMitraRAG:
     """Share one in-memory retrieval index for the shared law library."""
+    del cache_epoch
     return NyayMitraRAG(_db)
 
 
 def refresh_rag(db: Database) -> NyayMitraRAG:
-    rag = get_rag(db.library_db or db)
+    rag = get_rag(db.library_db or db, RESOURCE_CACHE_EPOCH)
     rag.reload()
     return rag
 
 
 @st.cache_resource
-def get_quiz_service(profile_id: str, _db: Database) -> QuizService:
+def get_quiz_service(profile_id: str, _db: Database, cache_epoch: int) -> QuizService:
     """Keep per-profile quiz state and its derived-question cache across reruns."""
+    del cache_epoch
     return QuizService(_db)
 
 
@@ -1517,13 +1525,13 @@ def page_upload(lang: str, processor: DocumentProcessor) -> None:
 def main() -> None:
     inject_css()
     init_state()
-    auth_db = get_auth_db()
+    auth_db = get_auth_db(RESOURCE_CACHE_EPOCH)
     db = get_db()
     profile_id = st.session_state.get("user_id") or st.session_state.guest_profile_id
     processor = DocumentProcessor(db, profile_upload_dir(db))
     searcher = LegalSearch(db)
     quiz_profile_id = "public-guest" if config.PUBLIC_MODE and not st.session_state.get("user_id") else str(profile_id)
-    quiz = get_quiz_service(quiz_profile_id, db)
+    quiz = get_quiz_service(quiz_profile_id, db, RESOURCE_CACHE_EPOCH)
     header(LANGS[st.session_state.language])
     lang = LANGS[st.session_state.language]
     sidebar_nav(lang)
@@ -1531,7 +1539,7 @@ def main() -> None:
     if page == "home":
         page_home(lang, db, searcher)
     elif page == "chat":
-        page_chat(lang, db, get_rag(db.library_db or db))
+        page_chat(lang, db, get_rag(db.library_db or db, RESOURCE_CACHE_EPOCH))
     elif page == "laws":
         page_laws(lang, searcher)
     elif page == "quiz":
@@ -1539,13 +1547,13 @@ def main() -> None:
     elif page == "admin_portal":
         page_admin_portal(lang, auth_db)
     elif page == "admin":
-        library_db = get_law_library_db()
+        library_db = get_law_library_db(RESOURCE_CACHE_EPOCH)
         publish_legacy_admin_pdfs(db, library_db)
         shared_processor = DocumentProcessor(library_db, library_db.uploads_dir)
         page_admin(lang, db, shared_processor)
     elif page == "upload":
         if st.session_state.is_admin:
-            library_db = get_law_library_db()
+            library_db = get_law_library_db(RESOURCE_CACHE_EPOCH)
             publish_legacy_admin_pdfs(db, library_db)
             shared_processor = DocumentProcessor(library_db, library_db.uploads_dir)
             page_upload(lang, shared_processor)

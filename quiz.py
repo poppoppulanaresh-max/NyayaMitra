@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import random
 import re
+import sqlite3
 from collections import OrderedDict
 from typing import Any
 
@@ -101,19 +102,35 @@ class QuizService:
         return questions
 
     def _legacy_document_chunks(self, document_id: str) -> list[dict[str, Any]]:
-        """Read one Act directly when an older cached Database lacks the helper."""
-        source_db = getattr(self.db, "library_db", None) or self.db
-        with source_db.connect() as con:
-            cursor = con.execute(
-                "SELECT c.*, d.original_filename FROM chunks c "
-                "LEFT JOIN documents d ON d.id = c.document_id "
-                "WHERE c.document_id = ? AND c.active = 1 "
-                "AND length(trim(c.text)) > 0 ORDER BY c.id",
-                (document_id,),
-            )
-            columns = tuple(column[0] for column in (cursor.description or ()))
-            rows = cursor.fetchall()
-        return [_row_to_dict(row, columns) for row in rows]
+        """Read chunks by DB path when an old cached Database method fails."""
+        document_key = str(document_id)
+        candidates = [self.db, getattr(self.db, "library_db", None)]
+        for source_db in candidates:
+            db_path = getattr(source_db, "db_path", None) if source_db is not None else None
+            if not db_path:
+                continue
+            con = sqlite3.connect(str(db_path))
+            con.row_factory = sqlite3.Row
+            try:
+                doc = con.execute(
+                    "SELECT active FROM documents WHERE id = ?", (document_key,)
+                ).fetchone()
+                if doc is None:
+                    continue
+                if not doc["active"]:
+                    return []
+                cursor = con.execute(
+                    "SELECT c.*, d.original_filename FROM chunks c "
+                    "LEFT JOIN documents d ON d.id = c.document_id "
+                    "WHERE c.document_id = ? AND c.active = 1 "
+                    "AND length(trim(c.text)) > 0 ORDER BY c.id",
+                    (document_key,),
+                )
+                columns = tuple(column[0] for column in (cursor.description or ()))
+                return [_row_to_dict(row, columns) for row in cursor.fetchall()]
+            finally:
+                con.close()
+        return []
 
     def round_questions(self, document_id: str, round_index: int, lang: str = "en", size: int = 10) -> list[dict[str, Any]]:
         pool = self.law_question_pool(document_id, lang)
