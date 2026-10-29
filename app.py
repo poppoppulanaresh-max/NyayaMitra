@@ -599,6 +599,8 @@ def init_state() -> None:
         "laws_category": "All Categories",
         "laws_search_mode": "name",
         "laws_search_mode_widget": "name",
+        "browse_pdf_id": "",
+        "show_full_act_text": False,
         "act_search_input": "",
         "detail_chunk": None,
         "last_error": "",
@@ -784,6 +786,17 @@ def require_account(lang: str) -> bool:
     return False
 
 
+def open_law_in_browser(document_id: str, *, clear_search: bool = False) -> None:
+    """Open a selected indexed PDF in Browse Laws, with its detail panel shown."""
+    st.session_state.browse_pdf_id = str(document_id)
+    st.session_state.show_full_act_text = False
+    st.session_state.page = "laws"
+    if clear_search:
+        st.session_state.laws_indexed_pdf_search = ""
+        st.session_state.laws_query = ""
+    st.rerun()
+
+
 def establish_account_session(user_id: str, username: str, is_admin: bool) -> None:
     """Bind the browser session to one profile and discard any guest UI state."""
     st.session_state.user_id = user_id
@@ -827,11 +840,19 @@ def page_home(lang: str, db: Database, searcher: LegalSearch) -> None:
         year = act_year(title)
         date_label = display_act_title(doc.get("version_or_date") or doc.get("upload_date") or "Recently added")
         detail = f"Added to the legal information library{f' · {year}' if year else ''}"
-        st.markdown(
-            f'<article class="law-news-headline"><div class="law-news-date">{escape(date_label)}</div>'
-            f'<div><h3>{escape(title)}</h3><p>{escape(detail)}</p></div></article>',
-            unsafe_allow_html=True,
-        )
+        with st.container(border=True):
+            headline, action = st.columns([6, 1.35], vertical_alignment="center")
+            headline.markdown(
+                f'<article class="law-news-headline"><div class="law-news-date">{escape(date_label)}</div>'
+                f'<div><h3>{escape(title)}</h3><p>{escape(detail)}</p></div></article>',
+                unsafe_allow_html=True,
+            )
+            if action.button(
+                t(lang, "browse_act"),
+                key=f"home_open_law_{doc['id']}",
+                use_container_width=True,
+            ):
+                open_law_in_browser(str(doc["id"]), clear_search=True)
 
 
 def render_pdf_law_library(lang: str, db: Database, query: str = "") -> None:
@@ -879,9 +900,7 @@ def render_pdf_law_library(lang: str, db: Database, query: str = "") -> None:
             left.markdown(f"**{escape(label)}**")
             left.caption(str(doc.get("original_filename") or "PDF"))
             if right.button(t(lang, "browse_act"), key=f"open_law_pdf_{doc['id']}", use_container_width=True):
-                st.session_state.browse_pdf_id = str(doc["id"])
-                st.session_state.show_full_act_text = False
-                st.rerun()
+                open_law_in_browser(str(doc["id"]))
 
     if not selected_id:
         return

@@ -34,8 +34,16 @@ class QuizService:
         library_db = getattr(self.db, "library_db", None)
         local_revision_reader = getattr(self.db, "content_revision", None)
         shared_revision_reader = getattr(library_db, "content_revision", None)
-        local_revision = local_revision_reader() if callable(local_revision_reader) else 0
-        shared_revision = shared_revision_reader() if callable(shared_revision_reader) else 0
+        try:
+            local_revision = local_revision_reader() if callable(local_revision_reader) else 0
+        except (AttributeError, TypeError):
+            # Cached Streamlit resources can retain a Database instance from
+            # the previous code version during a hot reload.
+            local_revision = 0
+        try:
+            shared_revision = shared_revision_reader() if callable(shared_revision_reader) else 0
+        except (AttributeError, TypeError):
+            shared_revision = 0
         cache_key = (str(document_id), lang, local_revision, shared_revision)
         if cache_key in self._pool_cache:
             self._pool_cache.move_to_end(cache_key)

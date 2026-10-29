@@ -15,6 +15,35 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _row_to_dict(row: Any, columns: list[str] | tuple[str, ...] = ()) -> dict[str, Any]:
+    """Normalize sqlite rows and legacy tuple-like rows into a plain mapping.
+
+    Streamlit can keep cached Database instances alive across a code reload. A
+    row may therefore come from a connection configured differently by an old
+    cached instance. Use cursor column names as a safe fallback instead of
+    assuming every fetched row supports ``dict(row)``.
+    """
+    if isinstance(row, dict):
+        return dict(row)
+    try:
+        keys = row.keys()
+        return {str(key): row[key] for key in keys}
+    except (AttributeError, KeyError, TypeError, IndexError):
+        pass
+    if isinstance(row, (tuple, list)):
+        if not columns:
+            raise TypeError("Tuple database rows require cursor column names")
+        return dict(zip(columns, row))
+    try:
+        return dict(row)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return {
+            name: getattr(row, name)
+            for name in columns
+            if hasattr(row, name)
+        }
+
+
 class Database:
     def __init__(
         self,
@@ -542,21 +571,25 @@ class Database:
                     return []
                 limit_sql = " LIMIT ?" if limit is not None else ""
                 params = (str(document_id), int(limit)) if limit is not None else (str(document_id),)
-                rows = con.execute(
+                cursor = con.execute(
                     "SELECT c.*, d.original_filename FROM chunks c "
                     "LEFT JOIN documents d ON d.id = c.document_id "
                     "WHERE c.document_id = ? AND c.active = 1 "
                     "AND length(trim(c.text)) > 0 ORDER BY c.id" + limit_sql,
                     params,
-                ).fetchall()
-                return [dict(row) for row in rows]
+                )
+                columns = tuple(column[0] for column in (cursor.description or ()))
+                rows = cursor.fetchall()
+                return [_row_to_dict(row, columns) for row in rows]
         if not library_db:
             return []
         library_reader = getattr(library_db, "document_chunks", None)
         if callable(library_reader):
             try:
-                return library_reader(document_id, limit)
-            except AttributeError:
+                shared_rows = library_reader(document_id, limit)
+                if shared_rows is not None:
+                    return [_row_to_dict(row) for row in shared_rows]
+            except (AttributeError, TypeError):
                 # A cached Database instance from a previous app revision may
                 # not have document_chunks yet. Fall through to the same
                 # document-scoped SQL query without scanning all library text.
@@ -564,14 +597,16 @@ class Database:
         limit_sql = " LIMIT ?" if limit is not None else ""
         params = (str(document_id), int(limit)) if limit is not None else (str(document_id),)
         with library_db.connect() as con:
-            rows = con.execute(
+            cursor = con.execute(
                 "SELECT c.*, d.original_filename FROM chunks c "
                 "LEFT JOIN documents d ON d.id = c.document_id "
                 "WHERE c.document_id = ? AND c.active = 1 "
                 "AND length(trim(c.text)) > 0 ORDER BY c.id" + limit_sql,
                 params,
-            ).fetchall()
-        return [dict(row) for row in rows]
+            )
+            columns = tuple(column[0] for column in (cursor.description or ()))
+            rows = cursor.fetchall()
+        return [_row_to_dict(row, columns) for row in rows]
 
     def search_chunks(
         self,
