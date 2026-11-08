@@ -565,6 +565,18 @@ class NyayMitraRAG:
             re.IGNORECASE,
         ))
 
+    @staticmethod
+    def _asks_for_general_disability_rights(query: str) -> bool:
+        """Identify broad rights questions that need provisions from chapter II."""
+        if re.search(r"(?i)\b(?:section|sec\.?|ధారా|సెక్షన్|सेक्शन)\s*\d+", query or ""):
+            return False
+        return bool(re.search(
+            r"(?i)\b(?:what\s+(?:rights|protections)|rights\s+or\s+protections|rights\s+under|protections\s+under)\b|"
+            r"ఏ\s*హక్కులు|హక్కులు\s+(?:లేదా|మరియు)\s*రక్షణలు|ఏ\s*రక్షణలు|"
+            r"कौन\s*से\s*अधिकार|कौन-से\s*अधिकार|क्या\s*अधिकार|अधिकार\s+और\s+संरक्षण",
+            query or "",
+        ))
+
     def search(self, query: str, top_k: int = RETRIEVAL_TOP_K) -> list[dict[str, Any]]:
         query = (query or "").strip()[:MAX_QUERY_CHARS]
         self._refresh_if_stale()
@@ -645,6 +657,29 @@ class NyayMitraRAG:
                     fir_sources.append(self._public_source(row))
             if fir_sources:
                 return fir_sources[:top_k]
+
+        # Broad disability-rights questions need the actual rights chapter,
+        # not only section 2's definitions or later advisory-board provisions.
+        # Return representative operative provisions so the model can safely
+        # explain and cite the protections visible in its supplied evidence.
+        if act_hint == "disability" and self._asks_for_general_disability_rights(query):
+            target_sections = {"3", "4", "5", "6", "7", "8", "12", "13"}
+            selected: dict[str, dict[str, Any]] = {}
+            for item in legal_items:
+                act = str(item.get("act_name") or "").casefold()
+                section = str(item.get("section_number") or item.get("section") or "").casefold()
+                if "rights of persons with disabilities" not in act:
+                    continue
+                if section not in target_sections or item.get("is_contents_page"):
+                    continue
+                if section in selected:
+                    continue
+                row = dict(item)
+                row["score"] = 1.0
+                row["score_type"] = "targeted_rights_chapter"
+                selected[section] = self._public_source(row)
+            if selected:
+                return list(selected.values())
         # Explicit constitutional citations should outrank unrelated chunks
         # that happen to share words with a long pasted excerpt.
         article_match = re.search(r"\b(?:article|art\.|अनुच्छेद|ఆర్టికల్)\s*(\d+[A-Z]?)", query, re.IGNORECASE)

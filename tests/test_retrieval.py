@@ -51,6 +51,36 @@ def test_exact_section_and_act_keyword(processor, rag, db):
     assert by_kw
 
 
+def test_general_disability_rights_question_retrieves_rights_chapter(processor, rag):
+    sections = [
+        (3, "Equality and non-discrimination", "People with disabilities have equal rights and dignity."),
+        (4, "Women and children with disabilities", "Women and children enjoy rights equally."),
+        (5, "Community life", "People have the right to live in the community."),
+        (6, "Protection from cruel treatment", "Government shall protect people from cruel treatment."),
+        (7, "Protection from abuse and violence", "Authorities shall protect people from abuse, violence and exploitation."),
+        (8, "Protection and safety", "People have equal protection in situations of risk."),
+        (12, "Access to justice", "Government shall ensure access to courts without discrimination."),
+        (13, "Legal capacity", "People have equal legal capacity and may own or inherit property."),
+    ]
+    for number, title, text in sections:
+        _ingest(
+            processor,
+            f"rights_of_persons_with_disabilities_{number}.pdf",
+            f"Section {number} {title}. {text} " * 5,
+            "The Rights of Persons with Disabilities Act, 2016",
+        )
+    rag.reload()
+
+    hits = rag.search(
+        "వికలాంగుల హక్కుల చట్టం, 2016లో ఏ హక్కులు లేదా రక్షణలు వివరించబడ్డాయి?"
+    )
+
+    assert {str(hit["section_number"]) for hit in hits} == {
+        "3", "4", "5", "6", "7", "8", "12", "13"
+    }
+    assert all(hit["score_type"] == "targeted_rights_chapter" for hit in hits)
+
+
 def test_semantic_retrieval(processor, rag):
     _ingest(
         processor,
