@@ -899,6 +899,7 @@ def render_pdf_law_library(lang: str, db: Database, query: str = "") -> None:
         selected_id = ""
 
     for doc in docs:
+        document_id = str(doc["id"])
         raw_title = str(doc.get("act_name") or doc.get("original_filename") or t(lang, "uploaded_pdf"))
         title = display_act_title(raw_title)
         number = act_number_from_filename(str(doc.get("original_filename") or ""))
@@ -907,72 +908,92 @@ def render_pdf_law_library(lang: str, db: Database, query: str = "") -> None:
             left, right = st.columns([6, 1.2], vertical_alignment="center")
             left.markdown(f"**{escape(label)}**")
             left.caption(str(doc.get("original_filename") or "PDF"))
-            if right.button(t(lang, "browse_act"), key=f"open_law_pdf_{doc['id']}", use_container_width=True):
-                open_law_in_browser(str(doc["id"]))
+            if right.button(t(lang, "browse_act"), key=f"open_law_pdf_{document_id}", use_container_width=True):
+                open_law_in_browser(document_id)
+        # Place the open document directly after its card in the list. This
+        # keeps users from having to scroll past every other Act to find it.
+        if document_id == selected_id:
+            _render_selected_pdf_law(lang, db, doc)
 
-    if not selected_id:
-        return
 
-    doc = doc_by_id[selected_id]
+def _render_selected_pdf_law(lang: str, db: Database, doc: dict[str, Any]) -> None:
+    selected_id = str(doc["id"])
     preview_chunks = db.document_chunks(selected_id, limit=2)
     title = display_act_title(doc.get("act_name") or doc.get("original_filename") or t(lang, "uploaded_pdf"))
-    st.divider()
-    st.subheader(title)
-    st.caption(
-        f"{doc.get('page_count') or 0} {t(lang, 'page')} · "
-        f"{doc.get('chunk_count') or 0} {t(lang, 'indexed_passages')} · "
-        f"{t(lang, 'verification')}: {localized_verification_status(lang, str(doc.get('verification_status') or 'unverified'))}"
-    )
-    if doc.get("version_or_date"):
-        st.caption(str(doc["version_or_date"]))
-    stored_pdf = document_pdf_path(
-        db,
-        str(doc.get("stored_filename") or ""),
-        str(doc.get("original_filename") or ""),
-    )
-    close_col, _ = st.columns([1, 5])
-    if close_col.button(t(lang, "close"), key=f"close_law_pdf_{selected_id}"):
-        st.session_state.browse_pdf_id = ""
-        st.session_state.show_full_act_text = False
-        st.rerun()
-    if stored_pdf.is_file():
-        stat = stored_pdf.stat()
-        pdf_data = cached_pdf_bytes(str(stored_pdf), stat.st_mtime_ns, stat.st_size)
-        st.download_button(
-            t(lang, "download_pdf"),
-            data=pdf_data,
-            file_name=str(doc.get("original_filename") or "legal_document.pdf"),
-            mime="application/pdf",
-            key=f"laws_download_act_{doc['id']}",
+    with st.container(border=True):
+        st.subheader(title)
+        st.caption(
+            f"{doc.get('page_count') or 0} {t(lang, 'page')} · "
+            f"{doc.get('chunk_count') or 0} {t(lang, 'indexed_passages')} · "
+            f"{t(lang, 'verification')}: {localized_verification_status(lang, str(doc.get('verification_status') or 'unverified'))}"
         )
-        with st.expander(t(lang, "browse_pdf_page"), expanded=True):
-            st.iframe(cached_pdf_data_uri(str(stored_pdf), stat.st_mtime_ns, stat.st_size), height=690)
-    official_url = str(doc.get("source_url") or "").strip()
-    if official_url:
-        st.link_button("Open official source", official_url)
-    if preview_chunks:
-        st.caption(t(lang, "act_text_preview"))
-        for chunk in preview_chunks:
-            if chunk.get("section_number") and chunk.get("section_number") != "unknown":
-                provision_label = t(lang, "article") if chunk.get("provision_type") == "article" else t(lang, "section")
-                st.markdown(f"**{provision_label} {escape(str(chunk['section_number']))}**")
-            st.write(chunk.get("text") or "")
-        if st.button(t(lang, "read_full_act_text"), key=f"full_act_text_{selected_id}"):
-            st.session_state.show_full_act_text = True
-        if st.session_state.get("show_full_act_text"):
-            st.markdown("#### Full Act Text")
-            chunks = db.document_chunks(selected_id)
-            for chunk in chunks:
-                section = chunk.get("section_number")
-                page = chunk.get("page_number")
-                heading = []
-                if section and section != "unknown":
-                    heading.append(f"{t(lang, 'section')} {section}")
-                if page:
-                    heading.append(f"{t(lang, 'page')} {page}")
-                if heading:
-                    st.caption(" · ".join(heading))
+        if doc.get("version_or_date"):
+            st.caption(str(doc["version_or_date"]))
+        stored_pdf = document_pdf_path(
+            db,
+            str(doc.get("stored_filename") or ""),
+            str(doc.get("original_filename") or ""),
+        )
+        close_col, _ = st.columns([1, 5])
+        if close_col.button(t(lang, "close"), key=f"close_law_pdf_{selected_id}"):
+            st.session_state.browse_pdf_id = ""
+            st.session_state.show_full_act_text = False
+            st.session_state[f"show_pdf_preview_{selected_id}"] = False
+            st.rerun()
+        if stored_pdf.is_file():
+            stat = stored_pdf.stat()
+            st.download_button(
+                t(lang, "download_pdf"),
+                data=cached_pdf_bytes(str(stored_pdf), stat.st_mtime_ns, stat.st_size),
+                file_name=str(doc.get("original_filename") or "legal_document.pdf"),
+                mime="application/pdf",
+                key=f"laws_download_act_{selected_id}",
+            )
+            preview_key = f"show_pdf_preview_{selected_id}"
+            if st.button(t(lang, "browse_pdf_page"), key=f"toggle_pdf_preview_{selected_id}"):
+                st.session_state[preview_key] = not st.session_state.get(preview_key, False)
+            if st.session_state.get(preview_key):
+                st.iframe(cached_pdf_data_uri(str(stored_pdf), stat.st_mtime_ns, stat.st_size), height=690)
+        official_url = str(doc.get("source_url") or "").strip()
+        if official_url:
+            st.link_button("Open official source", official_url)
+        if preview_chunks:
+            st.caption(t(lang, "act_text_preview"))
+            for chunk in preview_chunks:
+                if chunk.get("section_number") and chunk.get("section_number") != "unknown":
+                    provision_label = t(lang, "article") if chunk.get("provision_type") == "article" else t(lang, "section")
+                    st.markdown(f"**{provision_label} {escape(str(chunk['section_number']))}**")
                 st.write(chunk.get("text") or "")
+            if st.button(t(lang, "read_full_act_text"), key=f"full_act_text_{selected_id}"):
+                st.session_state.show_full_act_text = not st.session_state.get("show_full_act_text", False)
+            if st.session_state.get("show_full_act_text"):
+                st.markdown("#### Full Act Text")
+                chunks = db.document_chunks(selected_id)
+                pdf_pages = sorted({
+                    int(chunk["page_number"])
+                    for chunk in chunks
+                    if str(chunk.get("page_number") or "").isdigit()
+                })
+                if pdf_pages:
+                    selected_page = st.selectbox(
+                        t(lang, "page"), pdf_pages,
+                        key=f"full_act_page_{selected_id}",
+                    )
+                    visible_chunks = [chunk for chunk in chunks if str(chunk.get("page_number") or "") == str(selected_page)]
+                else:
+                    visible_chunks = chunks[:12]
+                    st.caption("Showing the first 12 text passages because page metadata is unavailable.")
+                for chunk in visible_chunks:
+                    section = chunk.get("section_number")
+                    page = chunk.get("page_number")
+                    heading = []
+                    if section and section != "unknown":
+                        heading.append(f"{t(lang, 'section')} {section}")
+                    if page:
+                        heading.append(f"{t(lang, 'page')} {page}")
+                    if heading:
+                        st.caption(" · ".join(heading))
+                    st.write(chunk.get("text") or "")
 
 
 def localized_verification_status(lang: str, status: str) -> str:

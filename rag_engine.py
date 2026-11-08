@@ -24,6 +24,7 @@ from config import (
 )
 from database import Database
 from document_processor import is_contents_page, is_explanatory_page, structure_headings
+from legal_query import act_match_boost, expand_legal_query
 from translations import t
 
 logger = logging.getLogger("nyaya.rag")
@@ -76,10 +77,14 @@ class NyayMitraRAG:
         self._embedding_error = ""
         self._llm_last_error: dict[str, str] = {}
         self._translation_cache: dict[tuple[str, str], str] = {}
+        self._keyword_terms_cache: dict[str, frozenset[str]] = {}
         self._loaded_revision: tuple[int, int] | None = None
         self.reload()
 
     def reload(self) -> None:
+        # Chunk text can change after an upload/re-index. Discard cached tokens
+        # whenever the indexed corpus is refreshed.
+        self._keyword_terms_cache.clear()
         self.items = self.db.active_chunks()
         self._restore_structure_metadata()
         self._build_index()
@@ -465,7 +470,11 @@ class NyayMitraRAG:
             if not candidate_terms:
                 continue
             text = self._search_text(x).lower()
-            item_terms = set(re.findall(r"[^\W_]+", text, flags=re.UNICODE))
+            cache_key = str(x.get("chunk_key") or x.get("id") or id(x))
+            item_terms = self._keyword_terms_cache.get(cache_key)
+            if item_terms is None:
+                item_terms = frozenset(re.findall(r"[^\W_]+", text, flags=re.UNICODE))
+                self._keyword_terms_cache[cache_key] = item_terms
             matched = sum(1 for term in set(candidate_terms) if term in item_terms)
             score = matched / len(set(candidate_terms))
             # Require meaningful query coverage so a shared article or stop word
@@ -509,7 +518,7 @@ class NyayMitraRAG:
         return preferred if preferred in {"en", "hi", "te"} else "en"
 
     def _expand_query_for_retrieval(self, query: str) -> str:
-        """Translate native-script questions into English retrieval terms when AI is configured."""
+        """Translate native-script questions when the offline vocabulary has no match."""
         if not self._needs_query_translation(query):
             return ""
         try:
@@ -520,7 +529,7 @@ class NyayMitraRAG:
                 model=os.getenv("LLM_MODEL") or LLM_MODEL,
                 temperature=0,
                 max_tokens=160,
-                timeout=min(12, LLM_TIMEOUT_SECONDS),
+                timeout=min(6, LLM_TIMEOUT_SECONDS),
                 messages=[
                     {
                         "role": "system",
@@ -561,14 +570,25 @@ class NyayMitraRAG:
         legal_items = [item for item in legal_items if not item.get("is_explanatory_page")]
         if not legal_items:
             return []
-        translated_query = self._expand_query_for_retrieval(query)
-        act_hint = self._query_act_hint(query) or self._query_act_hint(translated_query)
-        include_contents = self._asks_for_contents(query) or self._asks_for_contents(translated_query)
+        indexed_act_names = tuple(dict.fromkeys(
+            str(item.get("act_name") or "") for item in legal_items if item.get("act_name")
+        ))
+        offline_query, offline_hint, explicit_acts = expand_legal_query(query, indexed_act_names)
+        # Common Hindi/Telugu wording is expanded locally first. Call the remote
+        # translator only for an unrecognized native-script query, reducing an
+        # extra network round trip for the usual legal topics.
+        translated_query = "" if offline_query else self._expand_query_for_retrieval(query)
+        act_hint = (
+            self._query_act_hint(query)
+            or offline_hint
+            or self._query_act_hint(translated_query)
+        )
+        include_contents = any(self._asks_for_contents(value) for value in (query, offline_query, translated_query))
 
         # A general civil-suit limitation question needs the Schedule's
         # residual-suits entry, not a random provision that mentions a civil
         # proceeding. Retrieve that entry directly when it is actually present.
-        combined_query = f"{query} {translated_query}"
+        combined_query = f"{query} {offline_query} {translated_query}"
         if act_hint == "limitation" and re.search(
             r"\b(civil\s+)?suits?\b|सिविल\s*(?:वाद|मुकदमा)|సివిల్\s*(?:కేసు|దావా)",
             combined_query,
@@ -639,21 +659,22 @@ class NyayMitraRAG:
         section_req_match = re.search(r"\b(?:section|sec\.?|धारा|సెక్షన్)\s*(\d+[A-Za-z]?)", query, re.IGNORECASE)
         explicit_section_num = section_req_match.group(1).casefold() if section_req_match else ""
 
-        search_base = " ".join(part for part in (query, translated_query) if part)
+        search_base = " ".join(part for part in (query, offline_query, translated_query) if part)
         search_query = self._expanded_query(search_base, act_hint)
         # Search broadly before filtering so seed examples cannot occupy the
         # result limit and crowd out actual Acts.
         semantic: list[dict[str, Any]] = []
         keyword: list[dict[str, Any]] = []
-        for candidate_query in dict.fromkeys((query, translated_query, search_query)):
+        candidate_limit = min(len(self.items), max(80, top_k * 16))
+        for candidate_query in dict.fromkeys((query, offline_query, translated_query, search_query)):
             if not candidate_query:
                 continue
-            semantic.extend(self._semantic_search(candidate_query, len(self.items)))
+            semantic.extend(self._semantic_search(candidate_query, candidate_limit))
             keyword.extend(self._keyword_search(
                 candidate_query,
-                len(self.items),
+                candidate_limit,
                 legal_items,
-                min_score=0.18 if act_hint or candidate_query != query else 0.34,
+                min_score=0.16 if act_hint or candidate_query != query or explicit_acts else 0.28,
             ))
         merged: dict[str, dict[str, Any]] = {}
         for row in keyword + semantic:
@@ -676,6 +697,7 @@ class NyayMitraRAG:
                 float(row.get("score") or 0)
                 + self._authority_boost(row)
                 + self._act_hint_boost(row, act_hint)
+                + act_match_boost(str(row.get("act_name") or ""), act_hint, explicit_acts)
             ),
             reverse=True,
         )
