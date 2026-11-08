@@ -31,7 +31,8 @@ _TOPICS: tuple[tuple[str, tuple[str, ...], tuple[str, ...], str], ...] = (
         "valid contract", "agreement", "contractor", "advance payment", "breach of contract", "refund",
         "भारतीय संविदा", "भारतीय अनुबंध", "वैध अनुबंध", "समझौता", "संविदा", "अनुबंध", "ठेकेदार", "अग्रिम भुगतान", "पैसे लौटाने",
         "భారతీయ ఒప్పంద", "చెల్లుబాటు అయ్యే ఒప్పందం", "ఒప్పందం", "కాంట్రాక్టర్", "ముందుగానే డబ్బు", "అడ్వాన్స్", "డబ్బు తిరిగి ఇవ్వడం", "పని ఆపేసి",
-    ), "Indian Contract Act agreements contracts offer acceptance consideration capacity consent lawful object breach performance damages advance payment"),
+        "ఒప్పందం చెల్లుబాటు", "ఒప్పందం చెల్లుబాటు కావడానికి", "ఒప్పందం చెల్లుబాటు కావాలంటే",
+    ), "Indian Contract Act valid contract essentials section 10 agreements enforceable by law agreement free consent parties competent to contract lawful consideration lawful object not expressly declared void offer acceptance consideration capacity consent performance breach damages advance payment"),
     ("cpc", ("code of civil procedure",), (
         "civil procedure", "civil suit", "file a civil case", "दीवानी प्रक्रिया", "दीवानी मुकदमा", "सिविल प्रक्रिया संहिता", "सिविल मुकदमा",
         "సివిల్ ప్రొసీజర్", "సివిల్ కేసు", "సివిల్ దావా",

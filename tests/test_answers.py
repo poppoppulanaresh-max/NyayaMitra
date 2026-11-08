@@ -219,6 +219,33 @@ def test_citations_only_from_retrieved(processor, rag, monkeypatch):
         assert cite.get("act_name") == "Right to Information Act, 2005"
 
 
+def test_section_citation_may_match_a_heading_inside_a_multi_section_source(rag):
+    source_text = (
+        "10. What agreements are contracts. All agreements are contracts if they are made by free consent. "
+        "11. Who are competent to contract. Every person of majority age and sound mind is competent."
+    )
+    source = {"section_number": "11", "text": source_text}
+
+    assert rag._citations_match_sources("Section 10 sets out when agreements are contracts.", [source])
+    assert rag._citations_match_sources("Sections 10 and 11 describe contract validity and capacity.", [source])
+    assert not rag._citations_match_sources("Section 12 defines sound mind.", [source])
+    assert not rag._citations_match_sources("సెక్షన్ 12లో సౌండ్ మైండ్ నిర్వచనం ఉంది.", [source])
+
+
+def test_multi_section_source_uses_first_heading_for_visible_citation(rag):
+    source = rag._public_source({
+        "section_number": "11",
+        "section_title": "Who are competent to contract",
+        "text": (
+            "10. What agreements are contracts. Agreements require free consent. "
+            "11. Who are competent to contract. A competent person may contract."
+        ),
+    })
+
+    assert source["section_number"] == "10"
+    assert source["section_title"] == "What agreements are contracts"
+
+
 def test_prompt_injection_does_not_override_instructions(processor, rag, monkeypatch):
     processor.ingest(
         "inject.pdf",

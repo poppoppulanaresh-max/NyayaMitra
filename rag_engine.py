@@ -466,7 +466,15 @@ class NyayMitraRAG:
                 # Do not dilute a supported English phrase with unmatched
                 # tokens from another script. This is not cross-language
                 # translation; only the English terms are used for this row.
-                candidate_terms = [term for term in terms if term.isascii()]
+                # Keep English search terms for English PDF passages. Ignore
+                # digits that survive from a native-script question (most
+                # often the Act year): a year alone occurs in every chunk's
+                # Act metadata and can incorrectly give unrelated sections a
+                # perfect keyword score.
+                candidate_terms = [
+                    term for term in terms
+                    if term.isascii() and re.search(r"[A-Za-z]", term)
+                ]
             if not candidate_terms:
                 continue
             text = self._search_text(x).lower()
@@ -763,6 +771,20 @@ class NyayMitraRAG:
     def _public_source(row: dict[str, Any]) -> dict[str, Any]:
         section = row.get("section_number") or row.get("section") or "unknown"
         title = row.get("section_title") or row.get("title") or ""
+        # Older bundled indexes can contain one passage spanning two adjacent
+        # provisions. Prefer the first actual heading in the passage for its
+        # visible citation instead of the trailing section inherited by the
+        # chunk metadata.
+        text = str(row.get("text") or "")
+        headings = [
+            (number, heading_title, kind)
+            for _, kind, number, heading_title in structure_headings(text)
+            if kind in {"section", "article"}
+        ]
+        if len(headings) > 1:
+            section, title, row_kind = headings[0]
+            if row_kind:
+                row = {**row, "provision_type": row_kind}
         return {
             "id": row.get("id"),
             "chunk_key": row.get("chunk_key"),
@@ -884,15 +906,20 @@ class NyayMitraRAG:
     @staticmethod
     def _citations_match_sources(answer: str, sources: list[dict[str, Any]]) -> bool:
         """Reject generated section/article numbers absent from retrieved provision metadata."""
-        allowed = {
-            str(source.get("section_number") or source.get("section") or "").strip().casefold()
-            for source in sources
-        }
-        allowed.discard("")
-        allowed.discard("unknown")
+        allowed: set[str] = set()
+        for source in sources:
+            section = str(source.get("section_number") or source.get("section") or "").strip().casefold()
+            if section and section != "unknown":
+                allowed.add(section)
+            # The PDF text is the primary evidence. Some legacy chunks span
+            # adjacent sections while metadata records only the last one.
+            # Accept citations for headings actually present in that passage.
+            for _, kind, number, _ in structure_headings(str(source.get("text") or "")):
+                if kind in {"section", "article"}:
+                    allowed.add(str(number).strip().casefold())
         claimed = re.findall(
             r"(?i)\b(?:sections?|secs?\.?|articles?|arts?\.?)\s*([0-9]{1,4}[a-z]?(?:\s*\([^)]{1,12}\))?)|"
-            r"(?:धारा|अनुच्छेद|సెక్షన్|ఆర్టికల్)\s*([0-9]{1,4}[a-z]?)",
+            r"(?:धारा|अनुच्छेद|सेक्शन|सेक्शनों|సెక్షన్|విభాగం|ఆర్టికల్)\s*([0-9]{1,4}[a-z]?)",
             answer or "",
         )
         numbers = [a or b for a, b in claimed]
