@@ -246,6 +246,52 @@ def test_multi_section_source_uses_first_heading_for_visible_citation(rag):
     assert source["section_title"] == "What agreements are contracts"
 
 
+def test_missing_citation_is_retrieved_from_same_act_and_answer_is_retried(processor, rag, monkeypatch):
+    processor.ingest(
+        "rights-section-3.pdf",
+        text_pdf_bytes("Section 3 Equality and non-discrimination. Persons with disabilities have equal rights. " * 3),
+        act_name="The Rights of Persons with Disabilities Act, 2016",
+    )
+    processor.ingest(
+        "rights-section-4.pdf",
+        text_pdf_bytes("Section 4 Women and children with disabilities. Women and children enjoy equal rights. " * 3),
+        act_name="The Rights of Persons with Disabilities Act, 2016",
+    )
+    rag.reload()
+    source = next(
+        rag._public_source(row)
+        for row in rag.items
+        if row.get("act_name") == "The Rights of Persons with Disabilities Act, 2016"
+        and row.get("section_number") == "3"
+    )
+    responses = [
+        "The Act's protection is in Section 4.",
+        "Section 4 requires equal rights for women and children with disabilities.",
+    ]
+
+    class RepairClient:
+        class chat:
+            class completions:
+                calls = 0
+
+                @classmethod
+                def create(cls, **kwargs):
+                    from types import SimpleNamespace
+
+                    content = responses[cls.calls]
+                    cls.calls += 1
+                    return SimpleNamespace(
+                        choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+                    )
+
+    monkeypatch.setattr(rag, "_llm", lambda: RepairClient())
+    answer, used = rag.compose_answer("What protections apply?", [source], "en")
+
+    assert used is True
+    assert "Section 4" in answer
+    assert RepairClient.chat.completions.calls == 2
+
+
 def test_prompt_injection_does_not_override_instructions(processor, rag, monkeypatch):
     processor.ingest(
         "inject.pdf",

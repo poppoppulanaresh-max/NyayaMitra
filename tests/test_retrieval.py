@@ -81,6 +81,25 @@ def test_general_disability_rights_question_retrieves_rights_chapter(processor, 
     assert all(hit["score_type"] == "targeted_rights_chapter" for hit in hits)
 
 
+def test_general_telugu_limitation_question_retrieves_section_three_and_article_113(processor, rag):
+    _ingest(
+        processor,
+        "limitation.pdf",
+        "3. Suit after the limitation period shall be dismissed. "
+        "113. Any suit for which no period of limitation is provided elsewhere in this Schedule. "
+        "Three years. When the right to sue accrues.",
+        "The Limitation Act, 1963",
+    )
+    rag.reload()
+
+    hits = rag.search(
+        "కేసు దాఖలు చేయడానికి ఉండే కాల పరిమితి గురించి కాలపరిమితి చట్టం, 1963 ఏమి చెబుతుంది?"
+    )
+
+    assert {str(hit["section_number"]) for hit in hits} == {"3", "113"}
+    assert any(hit["provision_type"] == "article" for hit in hits)
+
+
 def test_semantic_retrieval(processor, rag):
     _ingest(
         processor,

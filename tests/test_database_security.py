@@ -98,6 +98,25 @@ def test_invalid_credentials_rejected(db, monkeypatch):
     assert authenticate(db, "other", "correct-horse") is False
 
 
+def test_concurrent_admin_creation_reuses_case_insensitive_account(db):
+    from app import create_admin_account
+
+    first = create_admin_account(db, "admin-id-first", "NyayaMitra", "hash-first")
+    second = create_admin_account(db, "admin-id-second", "nyayamitra", "hash-second")
+
+    assert first and second
+    assert first["user_id"] == second["user_id"] == "admin-id-first"
+    assert second["username"] == "NyayaMitra"
+    assert second["is_admin"] == 1
+    with db.connect() as con:
+        rows = con.execute(
+            "SELECT user_id, username, password_hash FROM accounts WHERE username = ? COLLATE NOCASE",
+            ("NyayaMitra",),
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["password_hash"] == "hash-second"
+
+
 def test_unauthorized_means_no_admin_row_guess(db):
     assert authenticate(db, "admin", "admin") is False
     assert db.admin_count() == 0

@@ -14,7 +14,7 @@ import streamlit as st
 import config
 from auth import bootstrap_admin, hash_password, safe_compare
 from config import DB_PATH, KB_SEED_PATH, QUIZ_SEED_PATH, openai_configured
-from database import Database
+from database import Database, utc_now
 from document_processor import DocumentProcessingError, DocumentProcessor, sha256_bytes
 from legal_search import LegalSearch
 from quiz import QuizService
@@ -330,12 +330,26 @@ def get_admin_account(db: Database, username: str) -> dict[str, Any] | None:
         return dict(row) if row else None
 
 
-def create_admin_account(db: Database, user_id: str, username: str, password_hash: str) -> None:
+def create_admin_account(db: Database, user_id: str, username: str, password_hash: str) -> dict[str, Any] | None:
+    """Create or safely reuse the configured admin row during concurrent logins."""
     with db.connect() as con:
         con.execute(
-            "INSERT INTO accounts(user_id, username, password_hash, is_admin) VALUES(?, ?, ?, 1)",
-            (user_id, username.strip(), password_hash),
+            "INSERT OR IGNORE INTO accounts(user_id, username, password_hash, is_admin, created_at) VALUES(?, ?, ?, 1, ?)",
+            (user_id, username.strip(), password_hash, utc_now()),
         )
+        # Another Streamlit session may have inserted the case-insensitive
+        # username after this request checked for it. Reuse that durable row
+        # and synchronize its configured credentials instead of raising a
+        # UNIQUE constraint error or assigning a session to a phantom UUID.
+        con.execute(
+            "UPDATE accounts SET password_hash = ?, is_admin = 1 WHERE username = ? COLLATE NOCASE",
+            (password_hash, username.strip()),
+        )
+        row = con.execute(
+            "SELECT user_id, username, is_admin FROM accounts WHERE username = ? COLLATE NOCASE",
+            (username.strip(),),
+        ).fetchone()
+        return dict(row) if row else None
 
 
 def sync_admin_account(db: Database, username: str, password_hash: str) -> None:
@@ -1361,8 +1375,15 @@ def page_admin_portal(lang: str, auth_db: Database) -> None:
                         sync_admin_account(auth_db, clean_username, stored_hash)
                         user_id = str(account["user_id"])
                     else:
-                        user_id = uuid.uuid4().hex
-                        create_admin_account(auth_db, user_id, clean_username, stored_hash)
+                        account = create_admin_account(
+                            auth_db, uuid.uuid4().hex, clean_username, stored_hash
+                        )
+                        if not account:
+                            logger.error("Admin account could not be read after upsert")
+                            st.error("Admin sign-in could not be completed. Please retry.")
+                            return
+                        user_id = str(account["user_id"])
+                        clean_username = str(account["username"])
                     establish_account_session(user_id, clean_username, True)
                     st.rerun()
                 else:
